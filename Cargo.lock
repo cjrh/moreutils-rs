@@ -254,7 +254,8 @@ dependencies = [
 name = "isutf8"
 version = "0.1.0"
 dependencies = [
- "moreutils-common",
+ "libc",
+ "tempfile",
 ]
 
 [[package]]
@@ -281,6 +282,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "moreutils-common",
+ "tempfile",
 ]
 
 [[package]]

@@ -5,4 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-moreutils-common.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
