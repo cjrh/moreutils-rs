@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/common",
+    "crates/combine",
+    "crates/sponge",
+    "crates/ifne",
+    "crates/chronic",
+    "crates/mispipe",
+    "crates/pee",
+    "crates/isutf8",
+    "crates/zrun",
+    "crates/parallel",
+    "crates/ts",
+    "crates/errno",
+    "crates/ifdata",
+    "crates/lckdo",
+    "crates/vipe",
+    "crates/vidir",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://example.invalid/moreutils-rs"
+
+[workspace.dependencies]
+moreutils-common = { path = "crates/common" }
+libc = "0.2"
+tempfile = "3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+nix = { version = "0.30", features = ["net", "socket"] }
