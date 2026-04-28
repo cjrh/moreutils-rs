@@ -329,6 +329,7 @@ name = "mispipe"
 version = "0.1.0"
 dependencies = [
  "moreutils-common",
+ "tempfile",
 ]
 
 [[package]]
@@ -371,6 +372,7 @@ name = "parallel"
 version = "0.1.0"
 dependencies = [
  "moreutils-common",
+ "tempfile",
 ]
 
 [[package]]

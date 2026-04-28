@@ -18,14 +18,15 @@ fn main() {
         std::process::exit(1);
     });
     let stdout1 = child1.stdout.take().expect("piped stdout");
-    let mut cmd2 = shell_command(&args[2]);
-    let mut child2 = cmd2
-        .stdin(Stdio::from(stdout1))
-        .spawn()
-        .unwrap_or_else(|e| {
-            eprintln!("{prog}: {}: {e}", args[2]);
-            std::process::exit(1);
-        });
+    let mut child2 = {
+        let mut cmd2 = shell_command(&args[2]);
+        cmd2.stdin(Stdio::from(stdout1))
+            .spawn()
+            .unwrap_or_else(|e| {
+                eprintln!("{prog}: {}: {e}", args[2]);
+                std::process::exit(1);
+            })
+    };
     let status1 = child1.wait().unwrap_or_else(|e| {
         eprintln!("{prog}: waitpid() failed: {e}");
         std::process::exit(1);

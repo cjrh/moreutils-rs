@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use moreutils_common::{shell_command, status_code};
+use moreutils_common::shell_command;
 use std::env;
 use std::fs;
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus};
+
 use std::thread;
 use std::time::Duration;
 
@@ -22,30 +23,32 @@ fn loadavg() -> f64 {
         .unwrap_or(0.0)
 }
 
-fn spawn_job(command: &[String], args: &[String], replace: bool) -> Child {
+fn spawn_job(command: &[String], args: &[String], replace: bool) -> Option<Child> {
     if command.is_empty() {
-        shell_command(&args[0]).spawn().unwrap_or_else(|e| {
+        return Some(shell_command(&args[0]).spawn().unwrap_or_else(|e| {
             eprintln!("parallel: {}: {e}", args[0]);
             std::process::exit(1);
-        })
-    } else {
-        let mut argv = Vec::new();
-        if replace {
-            let arg = args.first().map(String::as_str).unwrap_or("");
-            for c in command {
-                argv.push(c.replace("{}", arg));
-            }
-        } else {
-            argv.extend_from_slice(command);
-            argv.extend_from_slice(args);
+        }));
+    }
+
+    let mut argv = Vec::new();
+    if replace {
+        let arg = args.first().map(String::as_str).unwrap_or("");
+        for c in command {
+            argv.push(c.replace("{}", arg));
         }
-        Command::new(&argv[0])
-            .args(&argv[1..])
-            .spawn()
-            .unwrap_or_else(|e| {
-                eprintln!("parallel: {}: {e}", argv[0]);
-                std::process::exit(1);
-            })
+    } else {
+        argv.extend_from_slice(command);
+        argv.extend_from_slice(args);
+    }
+    Command::new(&argv[0]).args(&argv[1..]).spawn().ok()
+}
+
+fn parallel_status_code(status: ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        code
+    } else {
+        1
     }
 }
 
@@ -56,7 +59,7 @@ fn reap_one(children: &mut Vec<Child>, block: bool) -> Option<i32> {
                 Ok(Some(status)) => {
                     let mut child = children.remove(i);
                     let _ = child.wait();
-                    return Some(status_code(status));
+                    return Some(parallel_status_code(status));
                 }
                 Ok(None) => {}
                 Err(_) => return Some(1),
@@ -70,61 +73,87 @@ fn reap_one(children: &mut Vec<Child>, block: bool) -> Option<i32> {
 }
 
 fn main() {
+    let prog = env::args().next().unwrap_or_else(|| "parallel".to_string());
+    let args: Vec<String> = env::args().skip(1).collect();
     let mut maxjobs: isize = -1;
     let mut maxload: Option<f64> = None;
     let mut replace = false;
     let mut nargs = 1usize;
-    let mut rest = Vec::new();
-    let mut it = env::args().skip(1).peekable();
-    while let Some(arg) = it.peek().cloned() {
+    let mut argidx_parse = 0usize;
+
+    while argidx_parse < args.len() {
+        let arg = &args[argidx_parse];
         if arg == "--" {
             break;
         }
         if !arg.starts_with('-') || arg == "-" {
             break;
         }
-        let arg = it.next().unwrap();
-        match arg.as_str() {
-            "-h" => usage(),
-            "-i" => replace = true,
-            "-j" => {
-                maxjobs = it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
-                    eprintln!("option '-j' is not a number");
-                    std::process::exit(2)
-                })
+
+        let option_text = &arg[1..];
+        let mut option_idx = 0usize;
+        while option_idx < option_text.len() {
+            let ch = option_text[option_idx..].chars().next().unwrap();
+            option_idx += ch.len_utf8();
+            match ch {
+                'h' => usage(),
+                'i' => replace = true,
+                'j' | 'l' | 'n' => {
+                    let value = if option_idx < option_text.len() {
+                        let value = option_text[option_idx..].to_string();
+                        option_idx = option_text.len();
+                        value
+                    } else {
+                        argidx_parse += 1;
+                        let Some(value) = args.get(argidx_parse) else {
+                            eprintln!("{prog}: option requires an argument -- '{ch}'");
+                            usage();
+                        };
+                        value.clone()
+                    };
+                    match ch {
+                        'j' => {
+                            maxjobs = value.parse().unwrap_or_else(|_| {
+                                eprintln!("option '{value}' is not a number");
+                                std::process::exit(2)
+                            });
+                        }
+                        'l' => {
+                            maxload = Some(value.parse().unwrap_or_else(|_| {
+                                eprintln!("option '{value}' is not a number");
+                                std::process::exit(2)
+                            }));
+                        }
+                        'n' => {
+                            let parsed: isize = value.parse().unwrap_or_else(|_| {
+                                eprintln!("option '{value}' is not a positive number");
+                                std::process::exit(2)
+                            });
+                            if parsed <= 0 {
+                                eprintln!("option '{value}' is not a positive number");
+                                std::process::exit(2);
+                            }
+                            nargs = parsed as usize;
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                _ => {
+                    eprintln!("{prog}: invalid option -- '{ch}'");
+                    usage();
+                }
             }
-            "-l" => {
-                maxload = Some(it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
-                    eprintln!("option '-l' is not a number");
-                    std::process::exit(2)
-                }))
-            }
-            "-n" => {
-                nargs = it
-                    .next()
-                    .and_then(|s| s.parse().ok())
-                    .filter(|&n| n > 0)
-                    .unwrap_or_else(|| {
-                        eprintln!("option '-n' is not a positive number");
-                        std::process::exit(2)
-                    })
-            }
-            _ => usage(),
         }
+        argidx_parse += 1;
     }
-    rest.extend(it);
+
+    let rest = args[argidx_parse..].to_vec();
     if replace && nargs > 1 {
         eprintln!("options -i and -n are incompatible");
         std::process::exit(2);
     }
-    if maxjobs < 0 {
-        maxjobs = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1) as isize;
-    }
-
     let Some(sep) = rest.iter().position(|a| a == "--") else {
-        usage();
+        std::process::exit(0);
     };
     let command = rest[..sep].to_vec();
     let arguments = rest[sep + 1..].to_vec();
@@ -137,11 +166,18 @@ fn main() {
     let mut children: Vec<Child> = Vec::new();
     let mut ret = 0;
     while argidx < arguments.len() {
-        while maxjobs != 0 && children.len() >= maxjobs as usize {
+        let max_running = if maxjobs == 0 {
+            Some(1)
+        } else if maxjobs > 0 {
+            Some(maxjobs as usize)
+        } else {
+            None
+        };
+        while max_running.is_some_and(|max| children.len() >= max) {
             ret |= reap_one(&mut children, true).unwrap_or(1);
         }
         if let Some(max) = maxload {
-            while loadavg() >= max {
+            while max >= 0.0 && loadavg() >= max {
                 if let Some(code) = reap_one(&mut children, false) {
                     ret |= code;
                 } else {
@@ -154,8 +190,11 @@ fn main() {
         } else {
             nargs.min(arguments.len() - argidx)
         };
-        let child = spawn_job(&command, &arguments[argidx..argidx + count], replace);
-        children.push(child);
+        if let Some(child) = spawn_job(&command, &arguments[argidx..argidx + count], replace) {
+            children.push(child);
+        } else {
+            ret |= 1;
+        }
         argidx += count;
     }
     while !children.is_empty() {

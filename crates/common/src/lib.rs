@@ -3,7 +3,7 @@
 use std::process::ExitStatus;
 
 #[cfg(unix)]
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 pub fn status_code(status: ExitStatus) -> i32 {
     if let Some(code) = status.code() {
@@ -26,7 +26,9 @@ pub fn exit_with_status(status: ExitStatus) -> ! {
 
 pub fn shell_command(command: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new("/bin/sh");
-    cmd.arg("-c").arg(command);
+    #[cfg(unix)]
+    cmd.arg0("sh");
+    cmd.arg("-c").arg("--").arg(command);
     cmd
 }
 
