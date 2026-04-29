@@ -328,7 +328,7 @@ Make sure you are logged into crates.io:
 cargo login
 ```
 
-### Steps
+### Steps (normal — after initial publish)
 
 1. **Dry run first** — see exactly what will happen without doing anything:
 
@@ -342,10 +342,60 @@ cargo login
 2. **Run the release** — when the dry run looks correct:
 
    ```sh
-   cargo release <version>
+   cargo release <version> --execute
    ```
 
-### What `cargo release` does
+### First-time publish only
+
+crates.io limits new crate publishes to 5 per session, and this workspace has
+16 crates. The first release must be done in two stages: bump+tag first, then
+publish to crates.io in batches.
+
+1. **Bump, commit, tag, and push — but skip publishing:**
+
+   ```sh
+   cargo release patch --no-publish --execute
+   ```
+
+   This bumps all versions, creates the git commit and tag, and pushes to
+   GitHub (triggering the GitHub Release workflow for binaries).
+
+2. **Publish to crates.io in batches of ≤5.** Wait for each batch to succeed
+   before running the next:
+
+   ```sh
+   # Batch 1 — common library (must go first; the others depend on it)
+   cargo publish -p cjrh-moreutils-common
+
+   # Batch 2
+   cargo publish -p cjrh-moreutils-chronic
+   cargo publish -p cjrh-moreutils-combine
+   cargo publish -p cjrh-moreutils-errno
+   cargo publish -p cjrh-moreutils-ifdata
+
+   # Batch 3
+   cargo publish -p cjrh-moreutils-ifne
+   cargo publish -p cjrh-moreutils-isutf8
+   cargo publish -p cjrh-moreutils-lckdo
+   cargo publish -p cjrh-moreutils-mispipe
+
+   # Batch 4
+   cargo publish -p cjrh-moreutils-parallel
+   cargo publish -p cjrh-moreutils-pee
+   cargo publish -p cjrh-moreutils-sponge
+   cargo publish -p cjrh-moreutils-ts
+
+   # Batch 5
+   cargo publish -p cjrh-moreutils-vidir
+   cargo publish -p cjrh-moreutils-vipe
+   cargo publish -p cjrh-moreutils-zrun
+   ```
+
+After this initial publish, all 16 crates exist on crates.io and `cargo release
+<version> --execute` will work normally for all future releases — no batching
+needed.
+
+### What `cargo release --execute` does
 
 In order:
 
