@@ -68,7 +68,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chronic"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "moreutils-common",
  "tempfile",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "combine"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "moreutils-common",
@@ -108,7 +108,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "errno"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "moreutils-common",
@@ -232,7 +232,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "ifdata"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "moreutils-common",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "ifne"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "tempfile",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "isutf8"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "tempfile",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "lckdo"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "moreutils-common",
@@ -335,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "mispipe"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "moreutils-common",
  "tempfile",
@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "moreutils-common"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
 ]
@@ -378,7 +378,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "parallel"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "moreutils-common",
  "tempfile",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "pee"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "moreutils-common",
@@ -543,7 +543,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "sponge"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "moreutils-common",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "ts"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "moreutils-common",
@@ -598,7 +598,7 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "vidir"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "moreutils-common",
  "tempfile",
@@ -606,7 +606,7 @@ dependencies = [
 
 [[package]]
 name = "vipe"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "moreutils-common",
@@ -880,7 +880,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zrun"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "moreutils-common",
  "tempfile",
