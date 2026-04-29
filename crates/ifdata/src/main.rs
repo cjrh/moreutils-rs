@@ -109,7 +109,7 @@ fn ioctl_ifreq(fd: RawFd, iface: &str, request: libc::Ioctl) -> io::Result<libc:
 }
 
 fn exists(fd: RawFd, iface: &str) -> bool {
-    ioctl_ifreq(fd, iface, libc::SIOCGIFFLAGS).is_ok()
+    ioctl_ifreq(fd, iface, libc::SIOCGIFFLAGS as libc::Ioctl).is_ok()
 }
 
 fn sockaddr_to_v4(sockaddr: libc::sockaddr) -> Option<Ipv4Addr> {
@@ -127,29 +127,29 @@ fn ioctl_addr(fd: RawFd, iface: &str, request: libc::Ioctl) -> Option<Ipv4Addr> 
 }
 
 fn addr(fd: RawFd, iface: &str) -> Option<Ipv4Addr> {
-    ioctl_addr(fd, iface, libc::SIOCGIFADDR)
+    ioctl_addr(fd, iface, libc::SIOCGIFADDR as libc::Ioctl)
 }
 
 fn netmask(fd: RawFd, iface: &str) -> Option<Ipv4Addr> {
-    ioctl_addr(fd, iface, libc::SIOCGIFNETMASK)
+    ioctl_addr(fd, iface, libc::SIOCGIFNETMASK as libc::Ioctl)
 }
 
 fn broadcast(fd: RawFd, iface: &str) -> Option<Ipv4Addr> {
-    ioctl_addr(fd, iface, libc::SIOCGIFBRDADDR)
+    ioctl_addr(fd, iface, libc::SIOCGIFBRDADDR as libc::Ioctl)
 }
 
 fn mtu(fd: RawFd, iface: &str) -> Option<i32> {
-    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFMTU).ok()?;
+    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFMTU as libc::Ioctl).ok()?;
     Some(unsafe { ifr.ifr_ifru.ifru_mtu })
 }
 
 fn flags(fd: RawFd, iface: &str) -> Option<i16> {
-    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFFLAGS).ok()?;
+    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFFLAGS as libc::Ioctl).ok()?;
     Some(unsafe { ifr.ifr_ifru.ifru_flags })
 }
 
 fn hwaddr(fd: RawFd, iface: &str) -> Option<[u8; 6]> {
-    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFHWADDR).ok()?;
+    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFHWADDR as libc::Ioctl).ok()?;
     let sockaddr = unsafe { ifr.ifr_ifru.ifru_hwaddr };
     let mut out = [0u8; 6];
     for (dst, src) in out.iter_mut().zip(sockaddr.sa_data.iter()) {
