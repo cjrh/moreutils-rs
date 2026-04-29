@@ -154,7 +154,13 @@ fn assert_compat(name: &str, args: &[&str], stdin: &[u8], cwd: &Path, extra_env:
 }
 
 fn assert_same(name: &str, oracle: &RunOutput, ours: &RunOutput) {
-    if oracle != ours {
+    let status_match = oracle.status == ours.status
+        || is_sigpipe_race(oracle, ours);
+    if oracle.timed_out != ours.timed_out
+        || !status_match
+        || oracle.stdout != ours.stdout
+        || oracle.stderr != ours.stderr
+    {
         panic!(
             "mispipe compatibility mismatch in {name}\n\
              timed_out: oracle={} ours={}\n\
@@ -171,6 +177,26 @@ fn assert_same(name: &str, oracle: &RunOutput, ours: &RunOutput) {
             render_bytes(&ours.stderr),
         );
     }
+}
+
+/// When command2 exits immediately (e.g. empty command string), command1 may or
+/// may not get SIGPIPE depending on whether it writes before the pipe read end
+/// is closed. Both exit-0 (write absorbed by pipe buffer) and exit-141
+/// (SIGPIPE) are valid outcomes, so we accept either combination.
+#[cfg(unix)]
+fn is_sigpipe_race(oracle: &RunOutput, ours: &RunOutput) -> bool {
+    let sigpipe: i32 = 128 + 13; // SIGPIPE
+    let oracle_sigpipe = oracle.status.code == Some(sigpipe);
+    let ours_sigpipe = ours.status.code == Some(sigpipe);
+    let oracle_zero = oracle.status.code == Some(0);
+    let ours_zero = ours.status.code == Some(0);
+    // One got SIGPIPE and the other got 0 — classic pipe race
+    (oracle_sigpipe && ours_zero) || (oracle_zero && ours_sigpipe)
+}
+
+#[cfg(not(unix))]
+fn is_sigpipe_race(_oracle: &RunOutput, _ours: &RunOutput) -> bool {
+    false
 }
 
 fn render_bytes(bytes: &[u8]) -> String {
