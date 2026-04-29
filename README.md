@@ -308,6 +308,109 @@ crates/
   zrun/
 ```
 
+## Cutting a new release
+
+This project uses [`cargo-release`](https://github.com/crate-ci/cargo-release) to
+bump versions, publish to crates.io, and push a tag that triggers the GitHub
+Release workflow.
+
+### Prerequisites
+
+Install `cargo-release` once:
+
+```sh
+cargo install cargo-release
+```
+
+Make sure you are logged into crates.io:
+
+```sh
+cargo login
+```
+
+### Steps
+
+1. **Dry run first** — see exactly what will happen without doing anything:
+
+   ```sh
+   cargo release <version> --dry-run
+   ```
+
+   `<version>` can be a bump level (`patch`, `minor`, `major`) or an explicit
+   version like `0.2.0`.
+
+2. **Run the release** — when the dry run looks correct:
+
+   ```sh
+   cargo release <version>
+   ```
+
+### What `cargo release` does
+
+In order:
+
+1. **Bumps versions** across all workspace crates (e.g. `0.1.3` → `0.2.0`),
+   including the `cjrh-moreutils-common` workspace dependency version.
+2. **Commits** the version changes as a single commit
+   (`consolidate-commits = true`).
+3. **Publishes to crates.io** in dependency order — `cjrh-moreutils-common`
+   first, then all 15 binary crates (`cjrh-moreutils-sponge`, etc.).
+4. **Tags** the commit with the bare version number (e.g. `0.2.0`, no `v`
+   prefix) as configured by `tag-name = "{{version}}"`.
+5. **Pushes** the commit and tag to GitHub.
+
+### What happens on GitHub
+
+The pushed tag triggers the `.github/workflows/release.yml` workflow, which:
+
+1. Builds all 15 binaries as static musl executables
+   (`x86_64-unknown-linux-musl`).
+2. Packages each binary as `<name>-<version>-x86_64-unknown-linux-musl.tar.gz`.
+3. Creates a GitHub Release on the tag and uploads all `.tar.gz` assets.
+
+These assets are what `cargo-binstall` downloads when a user runs:
+
+```sh
+cargo binstall cjrh-moreutils-sponge
+```
+
+### Crate names vs binary names
+
+Crate names on crates.io use the `cjrh-moreutils-` prefix to avoid collisions
+(e.g. `sponge`, `combine`, `parallel`, and `errno` are all taken). Each crate's
+`[[bin]]` section ensures the installed binary keeps the original short name:
+
+| Crate name on crates.io        | Binary name installed |
+|-------------------------------|-----------------------|
+| `cjrh-moreutils-chronic`      | `chronic`             |
+| `cjrh-moreutils-combine`      | `combine`             |
+| `cjrh-moreutils-errno`        | `errno`               |
+| `cjrh-moreutils-ifdata`       | `ifdata`              |
+| `cjrh-moreutils-ifne`         | `ifne`                |
+| `cjrh-moreutils-isutf8`       | `isutf8`              |
+| `cjrh-moreutils-lckdo`        | `lckdo`               |
+| `cjrh-moreutils-mispipe`      | `mispipe`             |
+| `cjrh-moreutils-parallel`     | `parallel`            |
+| `cjrh-moreutils-pee`          | `pee`                 |
+| `cjrh-moreutils-sponge`       | `sponge`              |
+| `cjrh-moreutils-ts`           | `ts`                  |
+| `cjrh-moreutils-vidir`        | `vidir`               |
+| `cjrh-moreutils-vipe`         | `vipe`                |
+| `cjrh-moreutils-zrun`         | `zrun`                |
+
+So `cargo install cjrh-moreutils-sponge` puts a binary called `sponge` on your
+`$PATH`.
+
+### Troubleshooting
+
+- **Publish failed partway through**: Re-run `cargo release` — crates.io
+  skips packages that are already published.
+- **Tag already exists**: Delete the remote tag and release, bump again, and
+  re-run. Or just bump to the next patch version.
+- **Version mismatch in workspace dep**: `cargo-release` should update the
+  `cjrh-moreutils-common` version in `[workspace.dependencies]` automatically.
+  If it doesn't, update it manually before publishing.
+
 ## License notes
 
 This repository is GPL-3.0-or-later. The original moreutils project is
