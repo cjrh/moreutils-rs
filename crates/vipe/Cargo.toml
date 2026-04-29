@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 moreutils-common.workspace = true
 tempfile.workspace = true
+libc.workspace = true
