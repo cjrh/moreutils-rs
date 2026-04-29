@@ -1,8 +1,14 @@
 [package]
-name = "isutf8"
+name = "cjrh-moreutils-isutf8"
 version = "0.1.3"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "isutf8"
+path = "src/main.rs"
 
 [dependencies]
 libc.workspace = true

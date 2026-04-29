@@ -23,6 +23,7 @@ resolver = "3"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/cjrh/moreutils-rs"
+description = "Rust implementations of the moreutils tools"
 
 [profile.release]
 lto = "fat"
@@ -34,13 +35,13 @@ strip = "symbols"
 [workspace.metadata.release]
 # Bare semver tag (e.g. `0.2.0`, no `v` prefix) so the release workflow fires.
 tag-name = "{{version}}"
-# Not a library — don't push to crates.io.
-publish = false
+# Publish to crates.io manually: common lib first, then binaries.
+publish = true
 # Single commit + single tag for the whole workspace.
 consolidate-commits = true
 
 [workspace.dependencies]
-moreutils-common = { path = "crates/common" }
+cjrh-moreutils-common = { path = "crates/common", version = "0.1.3" }
 libc = "0.2"
 tempfile = "3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

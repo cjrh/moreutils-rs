@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use moreutils_common::shell_command;
+use cjrh_moreutils_common::shell_command;
 use std::env;
 use std::fs;
 use std::process::{Child, Command, ExitStatus};

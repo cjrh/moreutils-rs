@@ -1,8 +1,14 @@
 [package]
-name = "ifne"
+name = "cjrh-moreutils-ifne"
 version = "0.1.3"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "ifne"
+path = "src/main.rs"
 
 [dependencies]
 libc.workspace = true

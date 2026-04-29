@@ -1,10 +1,16 @@
 [package]
-name = "sponge"
+name = "cjrh-moreutils-sponge"
 version = "0.1.3"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "sponge"
+path = "src/main.rs"
 
 [dependencies]
-moreutils-common.workspace = true
+cjrh-moreutils-common.workspace = true
 tempfile.workspace = true
 libc.workspace = true

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use moreutils_common::{shell_command, status_code};
+use cjrh_moreutils_common::{shell_command, status_code};
 use std::env;
 use std::process::Stdio;
 

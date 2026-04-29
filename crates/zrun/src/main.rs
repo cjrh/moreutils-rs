@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use moreutils_common::exit_with_status;
+use cjrh_moreutils_common::exit_with_status;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io;
