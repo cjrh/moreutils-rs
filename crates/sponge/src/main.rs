@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::env;
+use std::ffi::CStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 #[cfg(unix)]
@@ -14,31 +15,20 @@ fn usage() -> ! {
 }
 
 fn main() {
-    let mut append = false;
-    let mut outname: Option<String> = None;
-    for arg in env::args().skip(1) {
-        match arg.as_str() {
-            "-h" => usage(),
-            "-a" => append = true,
-            _ if outname.is_none() => outname = Some(arg),
-            _ => {
-                eprintln!("sponge: too many arguments");
-                std::process::exit(1);
-            }
-        }
-    }
+    let (append, outname) = parse_args();
 
     let mut input = Vec::new();
     if let Err(e) = io::stdin().read_to_end(&mut input) {
-        eprintln!("failed to read from stdin: {e}");
+        print_os_error("failed to read from stdin", &e);
         std::process::exit(1);
     }
 
     let Some(outname) = outname else {
-        if let Err(e) = io::stdout().write_all(&input) {
-            eprintln!("error writing buffer to output file: {e}");
-            std::process::exit(1);
-        }
+        write_all_or_die(
+            io::stdout().lock(),
+            &input,
+            "error writing buffer to output file",
+        );
         return;
     };
 
@@ -80,11 +70,12 @@ fn main() {
             .prefix(".sponge.")
             .tempfile_in(dir)
             .unwrap_or_else(|e| {
-                eprintln!("mkstemp failed: {e}");
+                print_os_error("error opening output file", &e);
                 std::process::exit(1);
             });
-        if let Err(e) = tmp.write_all(&data).and_then(|_| tmp.flush()) {
-            eprintln!("error writing buffer to temporary file: {e}");
+        write_all_or_die(&mut tmp, &data, "error writing buffer to temporary file");
+        if let Err(e) = tmp.flush() {
+            print_os_error("error writing buffer to temporary file", &e);
             std::process::exit(1);
         }
         #[cfg(unix)]
@@ -98,7 +89,7 @@ fn main() {
                 .as_file()
                 .set_permissions(fs::Permissions::from_mode(mode))
             {
-                eprintln!("chmod: {e}");
+                print_os_error("chmod", &e);
                 std::process::exit(1);
             }
         }
@@ -106,7 +97,7 @@ fn main() {
             // Non-atomic fallback, matching sponge's behaviour for awkward filesystems.
             let (_file, _err) = (e.file, e.error);
             if let Err(e) = fs::write(path, &data) {
-                eprintln!("error opening output file: {e}");
+                print_os_error("error opening output file", &e);
                 std::process::exit(1);
             }
         }
@@ -116,12 +107,73 @@ fn main() {
         #[cfg(unix)]
         opts.mode(existing_mode.unwrap_or(0o666));
         let mut f = opts.open(path).unwrap_or_else(|e| {
-            eprintln!("error opening output file: {e}");
+            print_os_error("error opening output file", &e);
             std::process::exit(1);
         });
-        if let Err(e) = f.write_all(&data) {
-            eprintln!("error writing buffer to output file: {e}");
-            std::process::exit(1);
+        write_all_or_die(&mut f, &data, "error writing buffer to output file");
+    }
+}
+
+fn parse_args() -> (bool, Option<String>) {
+    let mut args = env::args();
+    let program = args.next().unwrap_or_else(|| "sponge".to_string());
+    let mut append = false;
+    let mut files = Vec::new();
+    let mut parsing_options = true;
+
+    for arg in args {
+        if parsing_options && arg == "--" {
+            parsing_options = false;
+        } else if parsing_options && arg.starts_with('-') && arg.len() > 1 {
+            for option in arg[1..].chars() {
+                match option {
+                    'a' => append = true,
+                    'h' => usage(),
+                    other => eprintln!("{program}: invalid option -- '{other}'"),
+                }
+            }
+        } else {
+            files.push(arg);
         }
     }
+
+    (append, files.into_iter().next())
+}
+
+fn write_all_or_die<W: Write>(mut writer: W, bytes: &[u8], prefix: &str) {
+    if let Err(e) = writer.write_all(bytes) {
+        if e.kind() == io::ErrorKind::BrokenPipe {
+            terminate_by_signal(libc::SIGPIPE);
+        }
+        print_os_error(prefix, &e);
+        std::process::exit(1);
+    }
+}
+
+fn print_os_error(prefix: &str, err: &io::Error) {
+    eprintln!("{prefix}: {}", os_error_message(err));
+}
+
+fn os_error_message(err: &io::Error) -> String {
+    if let Some(errno) = err.raw_os_error() {
+        unsafe {
+            let message = libc::strerror(errno);
+            if !message.is_null() {
+                return CStr::from_ptr(message).to_string_lossy().into_owned();
+            }
+        }
+    }
+    let message = err.to_string();
+    if let Some(index) = message.find(" (os error ") {
+        return message[..index].to_string();
+    }
+    message
+}
+
+fn terminate_by_signal(signal: i32) -> ! {
+    unsafe {
+        libc::signal(signal, libc::SIG_DFL);
+        libc::raise(signal);
+    }
+    std::process::exit(128 + signal);
 }

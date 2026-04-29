@@ -51,13 +51,10 @@ fn main() {
     for command in commands {
         let mut cmd = shell_command(&command);
         set_child_sigpipe(&mut cmd, ignore_sigpipe);
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .spawn()
-            .unwrap_or_else(|_| {
-                eprintln!("Can not open pipe to '{command}'");
-                std::process::exit(1);
-            });
+        let mut child = cmd.stdin(Stdio::piped()).spawn().unwrap_or_else(|_| {
+            eprintln!("Can not open pipe to '{command}'");
+            std::process::exit(1);
+        });
         let stdin = child.stdin.take();
         children.push(PipeChild {
             command,
@@ -120,11 +117,7 @@ fn pee_status_code(status: ExitStatus) -> i32 {
 
 #[cfg(unix)]
 fn set_sigpipe(ignore: bool) {
-    let handler = if ignore {
-        libc::SIG_IGN
-    } else {
-        libc::SIG_DFL
-    };
+    let handler = if ignore { libc::SIG_IGN } else { libc::SIG_DFL };
     unsafe {
         libc::signal(libc::SIGPIPE, handler);
     }
@@ -137,11 +130,7 @@ fn set_sigpipe(_ignore: bool) {}
 fn set_child_sigpipe(command: &mut std::process::Command, ignore: bool) {
     unsafe {
         command.pre_exec(move || {
-            let handler = if ignore {
-                libc::SIG_IGN
-            } else {
-                libc::SIG_DFL
-            };
+            let handler = if ignore { libc::SIG_IGN } else { libc::SIG_DFL };
             libc::signal(libc::SIGPIPE, handler);
             Ok(())
         });

@@ -7,3 +7,7 @@ license.workspace = true
 [dependencies]
 moreutils-common.workspace = true
 chrono.workspace = true
+regex = "1"
+
+[dev-dependencies]
+tempfile.workspace = true

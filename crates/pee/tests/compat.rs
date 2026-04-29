@@ -221,15 +221,47 @@ fn cli_parsing_options_and_command_errors_match() {
         ("no args consumes stdin", &[], b"ignored input\n"),
         ("one true command", &["true"], b"abc"),
         ("one cat command", &["cat"], b"abc"),
-        ("multiple commands without output", &["true", "true", ":"], b"abc"),
+        (
+            "multiple commands without output",
+            &["true", "true", ":"],
+            b"abc",
+        ),
         ("empty command string", &[""], b"abc"),
-        ("ignore sigpipe option", &["--ignore-sigpipe", "cat"], b"abc"),
-        ("no ignore sigpipe option without broken pipe", &["--no-ignore-sigpipe", "cat"], b"abc"),
-        ("ignore write errors option", &["--ignore-write-errors", "cat"], b"abc"),
-        ("no ignore write errors option without broken pipe", &["--no-ignore-write-errors", "cat"], b"abc"),
-        ("option after first command is a command", &["cat", "--ignore-sigpipe"], b"x"),
-        ("unknown option is a command", &["--definitely-not-a-pee-option", "cat"], b"x"),
-        ("command not found", &["definitely-not-a-pee-compat-command"], b"x"),
+        (
+            "ignore sigpipe option",
+            &["--ignore-sigpipe", "cat"],
+            b"abc",
+        ),
+        (
+            "no ignore sigpipe option without broken pipe",
+            &["--no-ignore-sigpipe", "cat"],
+            b"abc",
+        ),
+        (
+            "ignore write errors option",
+            &["--ignore-write-errors", "cat"],
+            b"abc",
+        ),
+        (
+            "no ignore write errors option without broken pipe",
+            &["--no-ignore-write-errors", "cat"],
+            b"abc",
+        ),
+        (
+            "option after first command is a command",
+            &["cat", "--ignore-sigpipe"],
+            b"x",
+        ),
+        (
+            "unknown option is a command",
+            &["--definitely-not-a-pee-option", "cat"],
+            b"x",
+        ),
+        (
+            "command not found",
+            &["definitely-not-a-pee-compat-command"],
+            b"x",
+        ),
     ];
 
     for (name, args, stdin) in cases {
@@ -271,8 +303,16 @@ fn stdout_stderr_and_no_implicit_echo_match() {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path();
     let cases: &[(&str, &[&str], &[u8])] = &[
-        ("no implicit stdout without cat", &["true"], b"input that is not echoed\n"),
-        ("explicit cat echoes stdin once", &["cat"], b"input that is echoed\n"),
+        (
+            "no implicit stdout without cat",
+            &["true"],
+            b"input that is not echoed\n",
+        ),
+        (
+            "explicit cat echoes stdin once",
+            &["cat"],
+            b"input that is echoed\n",
+        ),
         (
             "single command stdout and stderr after consuming stdin",
             &["cat >/dev/null; printf out; printf err >&2"],
@@ -298,7 +338,9 @@ fn stdout_stderr_and_no_implicit_echo_match() {
         ),
         (
             "slow command output",
-            &["perl -e '$|=1; while (read STDIN, my $b, 4096) {} for (1..3) { print qq(chunk$_\\n); select undef, undef, undef, 0.02 }'"],
+            &[
+                "perl -e '$|=1; while (read STDIN, my $b, 4096) {} for (1..3) { print qq(chunk$_\\n); select undef, undef, undef, 0.02 }'",
+            ],
             b"payload\n",
         ),
     ];
@@ -315,13 +357,25 @@ fn exit_status_aggregation_and_child_signals_match() {
     let cases: &[(&str, &[&str])] = &[
         ("all zero", &["exit 0", "true"]),
         ("one exits one", &["exit 1", "true"]),
-        ("multiple statuses are bitwise or", &["exit 1", "exit 2", "exit 4"]),
-        ("late command not found", &["true", "definitely-not-a-pee-compat-command"]),
+        (
+            "multiple statuses are bitwise or",
+            &["exit 1", "exit 2", "exit 4"],
+        ),
+        (
+            "late command not found",
+            &["true", "definitely-not-a-pee-compat-command"],
+        ),
         ("child killed by TERM becomes failure", &["kill -TERM $$"]),
         ("child killed by KILL becomes failure", &["kill -KILL $$"]),
         ("default child SIGPIPE is ignored", &["kill -PIPE $$"]),
-        ("explicit ignore child SIGPIPE is ignored", &["--ignore-sigpipe", "kill -PIPE $$"]),
-        ("no-ignore child SIGPIPE becomes failure", &["--no-ignore-sigpipe", "kill -PIPE $$"]),
+        (
+            "explicit ignore child SIGPIPE is ignored",
+            &["--ignore-sigpipe", "kill -PIPE $$"],
+        ),
+        (
+            "no-ignore child SIGPIPE becomes failure",
+            &["--no-ignore-sigpipe", "kill -PIPE $$"],
+        ),
     ];
 
     for (name, args) in cases {
@@ -337,13 +391,22 @@ fn sigpipe_and_write_error_options_match() {
     let cases: &[(&str, &[&str])] = &[
         ("default ignores one early consumer", &["true", "cat"]),
         ("default fails when all consumers close", &["true", "true"]),
-        ("explicit ignore write errors", &["--ignore-write-errors", "true", "true"]),
-        ("no ignore write errors reports diagnostic", &["--no-ignore-write-errors", "true"]),
+        (
+            "explicit ignore write errors",
+            &["--ignore-write-errors", "true", "true"],
+        ),
+        (
+            "no ignore write errors reports diagnostic",
+            &["--no-ignore-write-errors", "true"],
+        ),
         (
             "no ignore write errors stops before later consumers",
             &["--no-ignore-write-errors", "true", "cat"],
         ),
-        ("no ignore sigpipe dies from SIGPIPE", &["--no-ignore-sigpipe", "true"]),
+        (
+            "no ignore sigpipe dies from SIGPIPE",
+            &["--no-ignore-sigpipe", "true"],
+        ),
         (
             "last sigpipe option wins with ignore",
             &["--no-ignore-sigpipe", "--ignore-sigpipe", "true"],
@@ -389,13 +452,7 @@ fn shell_command_semantics_environment_cwd_and_redirections_match() {
         &oracle_dir,
         &[("PEE_TOKEN", "from-env")],
     );
-    let ours = run_pee(
-        OURS,
-        &args,
-        input,
-        &ours_dir,
-        &[("PEE_TOKEN", "from-env")],
-    );
+    let ours = run_pee(OURS, &args, input, &ours_dir, &[("PEE_TOKEN", "from-env")]);
     assert_same("shell command semantics", &oracle, &ours);
     for dir in [&oracle_dir, &ours_dir] {
         assert_file_bytes(&dir.join("sp ace"), input);
