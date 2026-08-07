@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 use cjrh_moreutils_common::exit_with_status;
 use std::env;

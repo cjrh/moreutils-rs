@@ -6,7 +6,7 @@ nobody thought to write long ago, when unix was young.”
 
 The goal is interface and behaviour compatibility with the original moreutils
 where practical, while using idiomatic, memory-safe Rust. This reimplementation
-is licensed under **GPL v3 or later**; see [`LICENSE`](LICENSE).
+is licensed under **GPL v2 only**; see [`LICENSE`](LICENSE).
 
 For background on the original tools, see:
 
@@ -463,6 +463,7 @@ So `cargo install cjrh-moreutils-sponge` puts a binary called `sponge` on your
 
 ## License notes
 
-This repository is GPL-3.0-or-later. The original moreutils project is
-GPL-family software; this project is a Rust reimplementation based on the public
-interfaces and compatibility testing against installed moreutils binaries.
+This repository is GPL-2.0-only. This licence was specifically chosen for
+compatibility with the original moreutils code, particularly its GPL-2-only
+`sponge` and `parallel` components. See the upstream
+[moreutils copyright file](https://metadata.ftp-master.debian.org/changelogs//main/m/moreutils/moreutils_0.70-1_copyright).

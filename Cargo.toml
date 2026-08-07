@@ -21,7 +21,7 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-license = "GPL-3.0-or-later"
+license = "GPL-2.0-only"
 repository = "https://github.com/cjrh/moreutils-rs"
 description = "Rust implementations of the moreutils tools"
 

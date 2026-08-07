@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 
 use chrono::{Datelike, FixedOffset, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use regex::bytes::{Captures, Regex};
