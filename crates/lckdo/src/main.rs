@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 use cjrh_moreutils_common::plain_os_error;
+use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl, open};
+use nix::sys::stat::Mode;
 use std::env;
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
+use std::fs::File;
 use std::io;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
@@ -50,25 +53,16 @@ fn main() {
 
     let mut fd = open_lockfile(lockfile, &config).unwrap_or_else(|err| open_error(lockfile, err));
     if let Some(keep_fd) = config.keep_fd {
-        // Match lckdo's historical behaviour: the descriptor is duplicated
-        // before locking, then the original descriptor is closed.  If the
-        // requested descriptor is already the opened descriptor (commonly 3),
-        // this closes it and the later lock attempt fails with EBADF.
-        if unsafe { libc::dup2(fd, keep_fd) } < 0 {
-            let err = io::Error::last_os_error();
+        fd = duplicate_to_fd(fd, keep_fd).unwrap_or_else(|err| {
             eprintln!(
                 "lckdo: unable to lock `{lockfile}': {}",
                 error_description(&err)
             );
             std::process::exit(EX_OSERR);
-        }
-        unsafe {
-            libc::close(fd);
-        }
-        fd = keep_fd;
+        });
     }
 
-    match acquire_lock(fd, &config) {
+    match acquire_lock(&fd, &config) {
         Ok(()) => {}
         Err(AcquireError::AlreadyLocked { timed_out }) => {
             if !config.quiet {
@@ -90,7 +84,7 @@ fn main() {
     }
 
     if config.exec_direct {
-        clear_cloexec(fd);
+        clear_cloexec(&fd);
         exec_program(&rest[1], &rest[2..]);
     } else {
         let status = run_program(&rest[1], &rest[2..]);
@@ -256,27 +250,39 @@ fn print_usage() {
     println!("   (implies -n)");
 }
 
-fn open_lockfile(lockfile: &str, config: &Config) -> io::Result<RawFd> {
-    let path = CString::new(lockfile).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "file name contained an interior NUL byte",
-        )
-    })?;
+fn open_lockfile(lockfile: &str, config: &Config) -> io::Result<File> {
     let mut flags = if config.test_only || config.shared {
-        libc::O_RDONLY
+        OFlag::O_RDONLY
     } else {
-        libc::O_WRONLY
+        OFlag::O_WRONLY
     };
     if !config.no_create && !config.test_only {
-        flags |= libc::O_CREAT;
+        flags |= OFlag::O_CREAT;
     }
-    let fd = unsafe { libc::open(path.as_ptr(), flags, 0o666) };
-    if fd < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(fd)
+    open(lockfile, flags, Mode::from_bits_truncate(0o666))
+        .map(File::from)
+        .map_err(io::Error::from)
+}
+
+fn duplicate_to_fd(file: File, target: RawFd) -> io::Result<File> {
+    let source = file.as_raw_fd();
+    if source == target {
+        drop(file);
+        return Err(io::Error::from_raw_os_error(libc::EBADF));
     }
+
+    // SAFETY: `target` is intentionally an arbitrary descriptor selected by
+    // lckdo's -E option. On success, dup2 transfers ownership of that target
+    // to this function; the source File is dropped before returning the new
+    // File so the two handles never own the same descriptor.
+    let duplicated = unsafe { libc::dup2(source, target) };
+    if duplicated < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    drop(file);
+    // SAFETY: dup2 succeeded and `source != target`, so `duplicated` is a
+    // newly owned, valid descriptor that is not owned by another File.
+    Ok(unsafe { File::from_raw_fd(duplicated) })
 }
 
 fn open_error(lockfile: &str, err: io::Error) -> ! {
@@ -303,7 +309,7 @@ enum AcquireError {
     Other(io::Error),
 }
 
-fn acquire_lock(fd: RawFd, config: &Config) -> Result<(), AcquireError> {
+fn acquire_lock(fd: &File, config: &Config) -> Result<(), AcquireError> {
     let lock_type = if config.shared {
         libc::F_RDLCK as libc::c_short
     } else {
@@ -311,25 +317,23 @@ fn acquire_lock(fd: RawFd, config: &Config) -> Result<(), AcquireError> {
     };
 
     if config.wait && config.timeout.is_none() {
-        let mut lock = flock_for(lock_type);
+        let lock = flock_for(lock_type);
         loop {
-            if unsafe { libc::fcntl(fd, libc::F_SETLKW, &mut lock) } == 0 {
-                return Ok(());
-            }
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() != Some(libc::EINTR) {
-                return Err(AcquireError::Other(err));
+            match fcntl(fd, FcntlArg::F_SETLKW(&lock)) {
+                Ok(_) => return Ok(()),
+                Err(err) if err == nix::errno::Errno::EINTR => continue,
+                Err(err) => return Err(AcquireError::Other(err.into())),
             }
         }
     }
 
     let start = Instant::now();
     loop {
-        let mut lock = flock_for(lock_type);
-        if unsafe { libc::fcntl(fd, libc::F_SETLK, &mut lock) } == 0 {
-            return Ok(());
-        }
-        let err = io::Error::last_os_error();
+        let lock = flock_for(lock_type);
+        let err = match fcntl(fd, FcntlArg::F_SETLK(&lock)) {
+            Ok(_) => return Ok(()),
+            Err(err) => io::Error::from(err),
+        };
         if !is_lock_contention(&err) {
             return Err(AcquireError::Other(err));
         }
@@ -368,8 +372,8 @@ fn test_lock(lockfile: &str, config: &Config) {
         libc::F_WRLCK as libc::c_short
     };
     let mut lock = flock_for(lock_type);
-    if unsafe { libc::fcntl(fd, libc::F_GETLK, &mut lock) } != 0 {
-        let err = io::Error::last_os_error();
+    if let Err(err) = fcntl(&fd, FcntlArg::F_GETLK(&mut lock)) {
+        let err = io::Error::from(err);
         eprintln!(
             "lckdo: unable to lock `{lockfile}': {}",
             error_description(&err)
@@ -479,11 +483,11 @@ fn error_description(err: &io::Error) -> String {
     plain_os_error(err)
 }
 
-fn clear_cloexec(fd: RawFd) {
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    if flags >= 0 {
-        unsafe {
-            libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-        }
-    }
+fn clear_cloexec(fd: &File) {
+    let Ok(flags) = fcntl(fd, FcntlArg::F_GETFD) else {
+        return;
+    };
+    let mut flags = FdFlag::from_bits_truncate(flags);
+    flags.remove(FdFlag::FD_CLOEXEC);
+    let _ = fcntl(fd, FcntlArg::F_SETFD(flags));
 }

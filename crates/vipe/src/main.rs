@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 use cjrh_moreutils_common::plain_os_error;
+#[cfg(unix)]
+use nix::sys::signal::{Signal, raise};
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
-use std::os::fd::AsRawFd;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tempfile::Builder;
 
 #[cfg(unix)]
@@ -127,56 +128,16 @@ fn stdin_is_tty() -> bool {
 }
 
 #[cfg(unix)]
-fn reopen_stdio_on_tty() -> File {
-    unsafe {
-        if libc::close(libc::STDIN_FILENO) == -1 {
-            die_io("close stdin", io::Error::last_os_error());
-        }
-    }
-    let tty_in = OpenOptions::new()
+fn editor_stdio() -> (File, File) {
+    let stdin = OpenOptions::new()
         .read(true)
         .open("/dev/tty")
         .unwrap_or_else(|e| die_io("reopen stdin", e));
-    if tty_in.as_raw_fd() != libc::STDIN_FILENO {
-        unsafe {
-            if libc::dup2(tty_in.as_raw_fd(), libc::STDIN_FILENO) == -1 {
-                die_io("reopen stdin", io::Error::last_os_error());
-            }
-        }
-    }
-    std::mem::forget(tty_in);
-
-    let out_fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
-    if out_fd == -1 {
-        die_io("save stdout", io::Error::last_os_error());
-    }
-    unsafe {
-        if libc::close(libc::STDOUT_FILENO) == -1 {
-            die_io("close stdout", io::Error::last_os_error());
-        }
-    }
-    let tty_out = OpenOptions::new()
+    let stdout = OpenOptions::new()
         .write(true)
         .open("/dev/tty")
         .unwrap_or_else(|e| die_io("reopen stdout", e));
-    if tty_out.as_raw_fd() != libc::STDOUT_FILENO {
-        unsafe {
-            if libc::dup2(tty_out.as_raw_fd(), libc::STDOUT_FILENO) == -1 {
-                die_io("reopen stdout", io::Error::last_os_error());
-            }
-        }
-    }
-    std::mem::forget(tty_out);
-
-    unsafe { File::from_raw_fd(out_fd) }
-}
-
-#[cfg(unix)]
-use std::os::fd::FromRawFd;
-
-#[cfg(not(unix))]
-fn reopen_stdio_on_tty() -> File {
-    File::create("/dev/null").unwrap()
+    (stdin, stdout)
 }
 
 fn main() {
@@ -202,15 +163,24 @@ fn main() {
         die_io("write temp", e);
     }
 
-    let mut final_stdout = reopen_stdio_on_tty();
+    #[cfg(unix)]
+    let (editor_stdin, editor_stdout) = editor_stdio();
 
     let (editor, editor_errno) = editor();
-    let status = if let Some((program, args)) = editor.split_first() {
-        Command::new(program).args(args).arg(tmp.path()).status()
+    let mut command = if let Some((program, args)) = editor.split_first() {
+        let mut command = Command::new(program);
+        command.args(args).arg(tmp.path());
+        command
     } else {
-        Command::new("").arg(tmp.path()).status()
-    }
-    .unwrap_or_else(|e| {
+        let mut command = Command::new("");
+        command.arg(tmp.path());
+        command
+    };
+    #[cfg(unix)]
+    command
+        .stdin(Stdio::from(editor_stdin))
+        .stdout(Stdio::from(editor_stdout));
+    let status = command.status().unwrap_or_else(|e| {
         if let Some(program) = editor.first() {
             eprintln!(
                 "Can't exec \"{}\": {} at {} line 87.",
@@ -246,12 +216,18 @@ fn main() {
         );
         std::process::exit(e.raw_os_error().unwrap_or(255));
     });
+    #[cfg(unix)]
+    let mut final_stdout = io::stdout().lock();
+    #[cfg(not(unix))]
+    let mut final_stdout = File::create("/dev/null").unwrap();
     if let Err(e) = final_stdout.write_all(&out) {
         if e.kind() == io::ErrorKind::BrokenPipe {
             #[cfg(unix)]
-            unsafe {
-                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-                libc::raise(libc::SIGPIPE);
+            {
+                unsafe {
+                    libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+                }
+                let _ = raise(Signal::SIGPIPE);
             }
         }
         die_io("write failure", e);

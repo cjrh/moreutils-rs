@@ -385,6 +385,23 @@ fn child_exit_status_signals_and_streams_match() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn realtime_child_signal_matches() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path();
+    let signal = libc::SIGRTMIN();
+    let command = format!("cat >/dev/null; kill -{signal} $$");
+
+    assert_compat(
+        "child killed by realtime signal",
+        &["sh", "-c", &command],
+        b"trigger\n",
+        cwd,
+        &[],
+    );
+}
+
 #[test]
 fn command_arguments_environment_cwd_and_path_lookup_match() {
     let temp = tempfile::tempdir().unwrap();

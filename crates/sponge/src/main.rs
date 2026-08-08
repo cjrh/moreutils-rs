@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 use cjrh_moreutils_common::plain_os_error;
+#[cfg(unix)]
+use nix::sys::{
+    signal::{Signal, raise},
+    stat::{Mode, umask},
+};
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -81,9 +86,9 @@ fn main() {
         #[cfg(unix)]
         {
             let mode = existing_mode.unwrap_or_else(|| {
-                let mask = unsafe { libc::umask(0) };
-                unsafe { libc::umask(mask) };
-                0o666 & !mask
+                let mask = umask(Mode::empty());
+                umask(mask);
+                0o666 & !mask.bits()
             });
             if let Err(e) = tmp
                 .as_file()
@@ -161,7 +166,9 @@ fn os_error_message(err: &io::Error) -> String {
 fn terminate_by_signal(signal: i32) -> ! {
     unsafe {
         libc::signal(signal, libc::SIG_DFL);
-        libc::raise(signal);
+    }
+    if let Ok(signal) = Signal::try_from(signal) {
+        let _ = raise(signal);
     }
     std::process::exit(128 + signal);
 }

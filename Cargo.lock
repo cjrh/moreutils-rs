@@ -120,6 +120,7 @@ version = "0.1.4"
 dependencies = [
  "cjrh-moreutils-common",
  "libc",
+ "nix",
  "tempfile",
 ]
 
@@ -137,6 +138,7 @@ version = "0.1.4"
 dependencies = [
  "cjrh-moreutils-common",
  "libc",
+ "nix",
  "tempfile",
 ]
 
@@ -171,6 +173,7 @@ version = "0.1.4"
 dependencies = [
  "cjrh-moreutils-common",
  "libc",
+ "nix",
  "tempfile",
 ]
 
@@ -198,6 +201,7 @@ version = "0.1.4"
 dependencies = [
  "cjrh-moreutils-common",
  "libc",
+ "nix",
  "tempfile",
 ]
 
