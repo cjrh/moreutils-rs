@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+use cjrh_moreutils_common::plain_os_error;
+use nix::ifaddrs::{InterfaceAddress, getifaddrs};
+use nix::sys::signal::{Signal, raise};
+use nix::sys::socket::SockaddrStorage;
 use std::env;
-use std::ffi::CStr;
 use std::fs;
 use std::io;
-use std::mem;
-use std::net::Ipv4Addr;
-use std::os::fd::RawFd;
+use std::net::{Ipv4Addr, SocketAddrV4};
+use std::path::{Component, Path};
 
 const COMMANDS: &[(&str, &str)] = &[
     ("-e", "Reports interface existence via return code"),
@@ -40,27 +42,6 @@ const COMMANDS: &[(&str, &str)] = &[
     ("-bops", "Print # of outgoing bytes per second"),
 ];
 
-struct Socket(RawFd);
-
-impl Socket {
-    fn new() -> io::Result<Self> {
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
-        if fd < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(Self(fd))
-        }
-    }
-}
-
-impl Drop for Socket {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.0);
-        }
-    }
-}
-
 fn usage() -> ! {
     eprintln!("Usage: /bin/ifdata [options] iface");
     for (opt, desc) in COMMANDS {
@@ -80,9 +61,7 @@ fn iface_not_found(iface: &str) -> ! {
 
 fn stack_smash_abort() -> ! {
     eprintln!("*** stack smashing detected ***: terminated");
-    unsafe {
-        libc::raise(libc::SIGABRT);
-    }
+    let _ = raise(Signal::SIGABRT);
     std::process::exit(134)
 }
 
@@ -90,72 +69,74 @@ fn is_stats_or_rate(opt: &str) -> bool {
     opt.starts_with("-si") || opt.starts_with("-so") || opt == "-bips" || opt == "-bops"
 }
 
-fn ifreq_for(iface: &str) -> libc::ifreq {
-    let mut ifr: libc::ifreq = unsafe { mem::zeroed() };
-    for (dst, src) in ifr.ifr_name.iter_mut().zip(iface.bytes()) {
-        *dst = src as libc::c_char;
-    }
-    ifr
+fn interfaces_for(iface: &str) -> io::Result<Vec<InterfaceAddress>> {
+    getifaddrs().map_err(io::Error::from).map(|interfaces| {
+        interfaces
+            .filter(|interface| interface.interface_name == iface)
+            .collect()
+    })
 }
 
-fn ioctl_ifreq(fd: RawFd, iface: &str, request: libc::Ioctl) -> io::Result<libc::ifreq> {
-    let mut ifr = ifreq_for(iface);
-    let rc = unsafe { libc::ioctl(fd, request, &mut ifr) };
-    if rc < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(ifr)
-    }
+fn exists(iface: &str) -> bool {
+    interfaces_for(iface).is_ok_and(|interfaces| !interfaces.is_empty())
 }
 
-fn exists(fd: RawFd, iface: &str) -> bool {
-    ioctl_ifreq(fd, iface, libc::SIOCGIFFLAGS as libc::Ioctl).is_ok()
+fn ipv4(address: &SockaddrStorage) -> Option<Ipv4Addr> {
+    let address: SocketAddrV4 = address.as_sockaddr_in()?.clone().into();
+    Some(*address.ip())
 }
 
-fn sockaddr_to_v4(sockaddr: libc::sockaddr) -> Option<Ipv4Addr> {
-    if i32::from(sockaddr.sa_family) != libc::AF_INET {
+fn addr(iface: &str) -> Option<Ipv4Addr> {
+    interfaces_for(iface)
+        .ok()?
+        .iter()
+        .find_map(|interface| interface.address.as_ref().and_then(ipv4))
+}
+
+fn netmask(iface: &str) -> Option<Ipv4Addr> {
+    interfaces_for(iface)
+        .ok()?
+        .iter()
+        .find_map(|interface| interface.netmask.as_ref().and_then(ipv4))
+}
+
+fn broadcast(iface: &str) -> Option<Ipv4Addr> {
+    interfaces_for(iface)
+        .ok()?
+        .iter()
+        .find_map(|interface| interface.broadcast.as_ref().and_then(ipv4))
+}
+
+fn sysfs_value(iface: &str, name: &str) -> Option<String> {
+    let mut components = Path::new(iface).components();
+    let Component::Normal(iface) = components.next()? else {
+        return None;
+    };
+    if components.next().is_some() {
         return None;
     }
-    let sin: libc::sockaddr_in = unsafe { mem::transmute(sockaddr) };
-    Some(Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr)))
+    fs::read_to_string(Path::new("/sys/class/net").join(iface).join(name)).ok()
 }
 
-fn ioctl_addr(fd: RawFd, iface: &str, request: libc::Ioctl) -> Option<Ipv4Addr> {
-    let ifr = ioctl_ifreq(fd, iface, request).ok()?;
-    let sockaddr = unsafe { ifr.ifr_ifru.ifru_addr };
-    sockaddr_to_v4(sockaddr)
+fn mtu(iface: &str) -> Option<i32> {
+    sysfs_value(iface, "mtu")?.trim().parse().ok()
 }
 
-fn addr(fd: RawFd, iface: &str) -> Option<Ipv4Addr> {
-    ioctl_addr(fd, iface, libc::SIOCGIFADDR as libc::Ioctl)
+fn flags(iface: &str) -> Option<i16> {
+    interfaces_for(iface)
+        .ok()?
+        .first()
+        .map(|interface| interface.flags.bits() as i16)
 }
 
-fn netmask(fd: RawFd, iface: &str) -> Option<Ipv4Addr> {
-    ioctl_addr(fd, iface, libc::SIOCGIFNETMASK as libc::Ioctl)
-}
-
-fn broadcast(fd: RawFd, iface: &str) -> Option<Ipv4Addr> {
-    ioctl_addr(fd, iface, libc::SIOCGIFBRDADDR as libc::Ioctl)
-}
-
-fn mtu(fd: RawFd, iface: &str) -> Option<i32> {
-    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFMTU as libc::Ioctl).ok()?;
-    Some(unsafe { ifr.ifr_ifru.ifru_mtu })
-}
-
-fn flags(fd: RawFd, iface: &str) -> Option<i16> {
-    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFFLAGS as libc::Ioctl).ok()?;
-    Some(unsafe { ifr.ifr_ifru.ifru_flags })
-}
-
-fn hwaddr(fd: RawFd, iface: &str) -> Option<[u8; 6]> {
-    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFHWADDR as libc::Ioctl).ok()?;
-    let sockaddr = unsafe { ifr.ifr_ifru.ifru_hwaddr };
-    let mut out = [0u8; 6];
-    for (dst, src) in out.iter_mut().zip(sockaddr.sa_data.iter()) {
-        *dst = *src as u8;
-    }
-    Some(out)
+fn hwaddr(iface: &str) -> Option<[u8; 6]> {
+    let octets: Vec<u8> = sysfs_value(iface, "address")?
+        .trim()
+        .split(':')
+        .map(|octet| u8::from_str_radix(octet, 16))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    octets.get(..6)?.try_into().ok()
 }
 
 fn network(addr: Ipv4Addr, mask: Ipv4Addr) -> Ipv4Addr {
@@ -187,14 +168,7 @@ fn stats(iface: &str) -> Option<([u64; 8], [u64; 8])> {
 }
 
 fn os_error_message(err: &io::Error) -> String {
-    if let Some(code) = err.raw_os_error() {
-        unsafe {
-            return CStr::from_ptr(libc::strerror(code))
-                .to_string_lossy()
-                .into_owned();
-        }
-    }
-    err.to_string()
+    plain_os_error(err)
 }
 
 fn print_flags(bits: i16) {
@@ -223,8 +197,8 @@ fn print_flags(bits: i16) {
     }
 }
 
-fn run_command(fd: RawFd, opt: &str, iface: &str) {
-    let ex = exists(fd, iface);
+fn run_command(opt: &str, iface: &str) {
+    let ex = exists(iface);
     match opt {
         "-e" => {
             std::process::exit(if ex { 0 } else { 1 });
@@ -239,32 +213,32 @@ fn run_command(fd: RawFd, opt: &str, iface: &str) {
     }
 
     match opt {
-        "-p" => match (addr(fd, iface), netmask(fd, iface), mtu(fd, iface)) {
+        "-p" => match (addr(iface), netmask(iface), mtu(iface)) {
             (Some(a), Some(n), Some(m)) => println!(
                 "{} {} {} {}",
                 a,
                 n,
-                broadcast(fd, iface).unwrap_or(Ipv4Addr::UNSPECIFIED),
+                broadcast(iface).unwrap_or(Ipv4Addr::UNSPECIFIED),
                 m
             ),
             _ => println!("NON-IP"),
         },
-        "-pa" => addr(fd, iface)
+        "-pa" => addr(iface)
             .map(|x| println!("{x}"))
             .unwrap_or_else(|| fail()),
-        "-pn" => netmask(fd, iface)
+        "-pn" => netmask(iface)
             .map(|x| println!("{x}"))
             .unwrap_or_else(|| fail()),
-        "-pN" => match (addr(fd, iface), netmask(fd, iface)) {
+        "-pN" => match (addr(iface), netmask(iface)) {
             (Some(a), Some(n)) => println!("{}", network(a, n)),
             _ => fail(),
         },
-        "-pb" => println!("{}", broadcast(fd, iface).unwrap_or(Ipv4Addr::UNSPECIFIED)),
-        "-pm" => mtu(fd, iface)
+        "-pb" => println!("{}", broadcast(iface).unwrap_or(Ipv4Addr::UNSPECIFIED)),
+        "-pm" => mtu(iface)
             .map(|x| println!("{x}"))
             .unwrap_or_else(|| fail()),
         "-ph" => {
-            let mac = hwaddr(fd, iface).unwrap_or([0; 6]);
+            let mac = hwaddr(iface).unwrap_or([0; 6]);
             if mac == [0; 6] {
                 eprintln!("Error: {iface}: no hardware address");
                 fail();
@@ -274,7 +248,7 @@ fn run_command(fd: RawFd, opt: &str, iface: &str) {
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
             );
         }
-        "-pf" => flags(fd, iface).map(print_flags).unwrap_or_else(|| fail()),
+        "-pf" => flags(iface).map(print_flags).unwrap_or_else(|| fail()),
         "-si" => stats(iface)
             .map(|(rx, _)| {
                 println!(
@@ -372,11 +346,7 @@ fn main() {
         usage();
     }
 
-    let sock = Socket::new().unwrap_or_else(|err| {
-        eprintln!("socket: {}", os_error_message(&err));
-        std::process::exit(1);
-    });
     for opt in opts {
-        run_command(sock.0, opt, iface);
+        run_command(opt, iface);
     }
 }

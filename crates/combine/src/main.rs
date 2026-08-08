@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
+#![deny(unsafe_code)]
 
+use cjrh_moreutils_common::plain_os_error;
 use std::collections::HashMap;
 use std::env;
-use std::ffi::CStr;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 
@@ -37,16 +38,7 @@ fn read_lines_or_die(path: &str) -> Vec<Vec<u8>> {
 }
 
 fn os_error_message(err: &io::Error) -> String {
-    if let Some(code) = err.raw_os_error() {
-        // SAFETY: strerror returns a pointer to a NUL-terminated static buffer
-        // for a valid OS errno value.
-        unsafe {
-            return CStr::from_ptr(libc::strerror(code))
-                .to_string_lossy()
-                .into_owned();
-        }
-    }
-    err.to_string()
+    plain_os_error(err)
 }
 
 fn counts(lines: &[Vec<u8>]) -> HashMap<Vec<u8>, usize> {

@@ -90,16 +90,12 @@ name = "cjrh-moreutils-combine"
 version = "0.1.4"
 dependencies = [
  "cjrh-moreutils-common",
- "libc",
  "tempfile",
 ]
 
 [[package]]
 name = "cjrh-moreutils-common"
 version = "0.1.4"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "cjrh-moreutils-errno"
@@ -122,7 +118,9 @@ dependencies = [
 name = "cjrh-moreutils-ifne"
 version = "0.1.4"
 dependencies = [
+ "cjrh-moreutils-common",
  "libc",
+ "nix",
  "tempfile",
 ]
 
@@ -130,7 +128,7 @@ dependencies = [
 name = "cjrh-moreutils-isutf8"
 version = "0.1.4"
 dependencies = [
- "libc",
+ "cjrh-moreutils-common",
  "tempfile",
 ]
 
@@ -140,6 +138,7 @@ version = "0.1.4"
 dependencies = [
  "cjrh-moreutils-common",
  "libc",
+ "nix",
  "tempfile",
 ]
 
@@ -174,6 +173,7 @@ version = "0.1.4"
 dependencies = [
  "cjrh-moreutils-common",
  "libc",
+ "nix",
  "tempfile",
 ]
 
@@ -201,6 +201,8 @@ version = "0.1.4"
 dependencies = [
  "cjrh-moreutils-common",
  "libc",
+ "nix",
+ "signal-hook",
  "tempfile",
 ]
 
@@ -578,6 +580,26 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "signal-hook"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+dependencies = [
+ "errno",
+ "libc",
+]
 
 [[package]]
 name = "slab"

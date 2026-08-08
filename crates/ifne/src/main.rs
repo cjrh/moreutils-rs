@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+use cjrh_moreutils_common::plain_os_error;
+use nix::sys::signal::{Signal, raise};
 use std::env;
-use std::ffi::CStr;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -113,15 +114,7 @@ fn print_os_error(prefix: &str, err: &io::Error) {
 }
 
 fn os_error_message(err: &io::Error) -> String {
-    if let Some(errno) = err.raw_os_error() {
-        unsafe {
-            let message = libc::strerror(errno);
-            if !message.is_null() {
-                return CStr::from_ptr(message).to_string_lossy().into_owned();
-            }
-        }
-    }
-    err.to_string()
+    plain_os_error(err)
 }
 
 fn exit_with_child_status(status: ExitStatus) -> ! {
@@ -138,7 +131,16 @@ fn exit_with_child_status(status: ExitStatus) -> ! {
 fn terminate_by_signal(signal: i32) -> ! {
     unsafe {
         libc::signal(signal, libc::SIG_DFL);
-        libc::raise(signal);
+    }
+    if let Ok(signal) = Signal::try_from(signal) {
+        let _ = raise(signal);
+    } else {
+        // SAFETY: the child can exit with a valid realtime signal which Nix's
+        // portable Signal enum does not represent. The signal value came from
+        // the operating system and is passed through unchanged.
+        unsafe {
+            libc::raise(signal);
+        }
     }
     std::process::exit(128 + signal);
 }

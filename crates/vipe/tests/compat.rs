@@ -2,10 +2,11 @@
 
 #![cfg(unix)]
 
+use nix::pty::{OpenptyResult, openpty};
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -41,15 +42,19 @@ struct RunOutput {
     tty: Vec<u8>,
 }
 
-fn base_command<S: AsRef<OsStr>>(program: S, cwd: &Path) -> (Command, RawFd, RawFd) {
-    let (master, slave) = open_pty();
+fn base_command<S: AsRef<OsStr>>(program: S, cwd: &Path) -> (Command, OwnedFd, OwnedFd) {
+    let OpenptyResult { master, slave } = openpty(None, None).expect("openpty");
+    let slave_fd = slave.as_raw_fd();
     let mut command = Command::new(program);
+    // SAFETY: The closure runs between fork and exec and invokes only the
+    // async-signal-safe `setsid` and TIOCSCTTY operations on a live slave FD.
+    // `slave` remains owned by the parent until after `spawn` completes.
     unsafe {
         command.arg0("/bin/vipe").pre_exec(move || {
             if libc::setsid() == -1 {
                 return Err(io::Error::last_os_error());
             }
-            if libc::ioctl(slave, libc::TIOCSCTTY, 0) == -1 {
+            if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
@@ -64,22 +69,6 @@ fn base_command<S: AsRef<OsStr>>(program: S, cwd: &Path) -> (Command, RawFd, Raw
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     (command, master, slave)
-}
-
-fn open_pty() -> (RawFd, RawFd) {
-    let mut master = -1;
-    let mut slave = -1;
-    let rc = unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    assert_eq!(rc, 0, "openpty: {}", io::Error::last_os_error());
-    (master, slave)
 }
 
 fn run_vipe(
@@ -112,11 +101,14 @@ fn run_vipe_with_stdout_closed(
     finish_command_with_stdout_closed(command, master, slave, stdin)
 }
 
-fn finish_command(mut command: Command, master: RawFd, slave: RawFd, stdin: &[u8]) -> RunOutput {
+fn finish_command(
+    mut command: Command,
+    master: OwnedFd,
+    slave: OwnedFd,
+    stdin: &[u8],
+) -> RunOutput {
     let mut child = command.spawn().expect("spawn vipe");
-    unsafe {
-        libc::close(slave);
-    }
+    drop(slave);
     let pid = child.id();
 
     let writer = child.stdin.take().map(|mut child_stdin| {
@@ -150,14 +142,12 @@ fn finish_command(mut command: Command, master: RawFd, slave: RawFd, stdin: &[u8
 
 fn finish_command_with_stdout_closed(
     mut command: Command,
-    master: RawFd,
-    slave: RawFd,
+    master: OwnedFd,
+    slave: OwnedFd,
     stdin: &[u8],
 ) -> RunOutput {
     let mut child = command.spawn().expect("spawn vipe");
-    unsafe {
-        libc::close(slave);
-    }
+    drop(slave);
     let pid = child.id();
     drop(child.stdout.take());
 
@@ -208,8 +198,8 @@ fn read_all<R: Read>(mut reader: R, name: &str) -> Vec<u8> {
     bytes
 }
 
-fn read_pty(master: RawFd) -> Vec<u8> {
-    let mut file = unsafe { File::from_raw_fd(master) };
+fn read_pty(master: OwnedFd) -> Vec<u8> {
+    let mut file = File::from(master);
     let mut bytes = Vec::new();
     let mut buf = [0_u8; 4096];
     loop {

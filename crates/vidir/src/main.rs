@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+use cjrh_moreutils_common::plain_os_error;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File};
@@ -329,18 +330,6 @@ fn dirname(path: &str) -> String {
 fn is_dot_or_dotdot_path(path: &str) -> bool {
     let path = path.trim_end_matches('/');
     path == "." || path == ".." || path.ends_with("/.") || path.ends_with("/..")
-}
-
-fn plain_os_error(err: &io::Error) -> String {
-    if let Some(code) = err.raw_os_error() {
-        // Perl reports strerror($!), without Rust's "(os error N)" suffix.
-        io::Error::from_raw_os_error(code)
-            .to_string()
-            .trim_end_matches(&format!(" (os error {code})"))
-            .to_string()
-    } else {
-        err.to_string()
-    }
 }
 
 fn die255(argv0: &str, message: &str) -> ! {

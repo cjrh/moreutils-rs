@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+use cjrh_moreutils_common::plain_os_error;
+#[cfg(unix)]
+use nix::sys::{
+    signal::{Signal, raise},
+    stat::{Mode, umask},
+};
 use std::env;
-use std::ffi::CStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 #[cfg(unix)]
@@ -81,9 +86,9 @@ fn main() {
         #[cfg(unix)]
         {
             let mode = existing_mode.unwrap_or_else(|| {
-                let mask = unsafe { libc::umask(0) };
-                unsafe { libc::umask(mask) };
-                0o666 & !mask
+                let mask = umask(Mode::empty());
+                umask(mask);
+                0o666 & !mask.bits()
             });
             if let Err(e) = tmp
                 .as_file()
@@ -155,25 +160,15 @@ fn print_os_error(prefix: &str, err: &io::Error) {
 }
 
 fn os_error_message(err: &io::Error) -> String {
-    if let Some(errno) = err.raw_os_error() {
-        unsafe {
-            let message = libc::strerror(errno);
-            if !message.is_null() {
-                return CStr::from_ptr(message).to_string_lossy().into_owned();
-            }
-        }
-    }
-    let message = err.to_string();
-    if let Some(index) = message.find(" (os error ") {
-        return message[..index].to_string();
-    }
-    message
+    plain_os_error(err)
 }
 
 fn terminate_by_signal(signal: i32) -> ! {
     unsafe {
         libc::signal(signal, libc::SIG_DFL);
-        libc::raise(signal);
+    }
+    if let Ok(signal) = Signal::try_from(signal) {
+        let _ = raise(signal);
     }
     std::process::exit(128 + signal);
 }
