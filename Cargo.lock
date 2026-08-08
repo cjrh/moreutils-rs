@@ -90,16 +90,12 @@ name = "cjrh-moreutils-combine"
 version = "0.1.4"
 dependencies = [
  "cjrh-moreutils-common",
- "libc",
  "tempfile",
 ]
 
 [[package]]
 name = "cjrh-moreutils-common"
 version = "0.1.4"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "cjrh-moreutils-errno"
@@ -122,6 +118,7 @@ dependencies = [
 name = "cjrh-moreutils-ifne"
 version = "0.1.4"
 dependencies = [
+ "cjrh-moreutils-common",
  "libc",
  "tempfile",
 ]
@@ -130,7 +127,7 @@ dependencies = [
 name = "cjrh-moreutils-isutf8"
 version = "0.1.4"
 dependencies = [
- "libc",
+ "cjrh-moreutils-common",
  "tempfile",
 ]
 

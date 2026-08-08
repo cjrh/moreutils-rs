@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+use cjrh_moreutils_common::plain_os_error;
 use std::env;
-use std::ffi::CStr;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::Command;
@@ -114,14 +114,7 @@ fn editor() -> (Vec<String>, Option<i32>) {
 }
 
 fn os_error_text(err: &io::Error) -> String {
-    match err.raw_os_error() {
-        Some(errno) => unsafe {
-            CStr::from_ptr(libc::strerror(errno))
-                .to_string_lossy()
-                .into_owned()
-        },
-        None => err.to_string(),
-    }
+    plain_os_error(err)
 }
 
 fn die_io(message: &str, err: io::Error) -> ! {
@@ -129,14 +122,8 @@ fn die_io(message: &str, err: io::Error) -> ! {
     std::process::exit(err.raw_os_error().unwrap_or(255));
 }
 
-#[cfg(unix)]
 fn stdin_is_tty() -> bool {
-    unsafe { libc::isatty(libc::STDIN_FILENO) == 1 }
-}
-
-#[cfg(not(unix))]
-fn stdin_is_tty() -> bool {
-    false
+    io::stdin().is_terminal()
 }
 
 #[cfg(unix)]

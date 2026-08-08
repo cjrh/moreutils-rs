@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+use cjrh_moreutils_common::plain_os_error;
 use std::env;
 use std::ffi::{CStr, CString};
 use std::io;
@@ -475,15 +476,7 @@ fn signal_description(signal: i32) -> String {
 }
 
 fn error_description(err: &io::Error) -> String {
-    if let Some(code) = err.raw_os_error() {
-        let ptr = unsafe { libc::strerror(code) };
-        if !ptr.is_null() {
-            return unsafe { CStr::from_ptr(ptr) }
-                .to_string_lossy()
-                .into_owned();
-        }
-    }
-    err.to_string()
+    plain_os_error(err)
 }
 
 fn clear_cloexec(fd: RawFd) {

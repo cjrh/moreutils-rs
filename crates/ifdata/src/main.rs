@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+use cjrh_moreutils_common::plain_os_error;
+use nix::sys::socket::{AddressFamily, SockFlag, SockType, socket};
 use std::env;
-use std::ffi::CStr;
 use std::fs;
 use std::io;
 use std::mem;
 use std::net::Ipv4Addr;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
 const COMMANDS: &[(&str, &str)] = &[
     ("-e", "Reports interface existence via return code"),
@@ -40,24 +41,18 @@ const COMMANDS: &[(&str, &str)] = &[
     ("-bops", "Print # of outgoing bytes per second"),
 ];
 
-struct Socket(RawFd);
+struct Socket(OwnedFd);
 
 impl Socket {
     fn new() -> io::Result<Self> {
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
-        if fd < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(Self(fd))
-        }
-    }
-}
-
-impl Drop for Socket {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.0);
-        }
+        socket(
+            AddressFamily::Inet,
+            SockType::Datagram,
+            SockFlag::empty(),
+            None,
+        )
+        .map(Self)
+        .map_err(io::Error::from)
     }
 }
 
@@ -187,14 +182,7 @@ fn stats(iface: &str) -> Option<([u64; 8], [u64; 8])> {
 }
 
 fn os_error_message(err: &io::Error) -> String {
-    if let Some(code) = err.raw_os_error() {
-        unsafe {
-            return CStr::from_ptr(libc::strerror(code))
-                .to_string_lossy()
-                .into_owned();
-        }
-    }
-    err.to_string()
+    plain_os_error(err)
 }
 
 fn print_flags(bits: i16) {
@@ -377,6 +365,6 @@ fn main() {
         std::process::exit(1);
     });
     for opt in opts {
-        run_command(sock.0, opt, iface);
+        run_command(sock.0.as_raw_fd(), opt, iface);
     }
 }
