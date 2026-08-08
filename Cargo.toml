@@ -45,4 +45,5 @@ cjrh-moreutils-common = { path = "crates/common", version = "0.1.4" }
 libc = "0.2"
 tempfile = "3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-nix = { version = "0.31", features = ["net", "socket", "fs", "signal"] }
+nix = { version = "0.31", features = ["net", "socket", "fs", "signal", "term", "user"] }
+signal-hook = { version = "0.3.18", default-features = false }

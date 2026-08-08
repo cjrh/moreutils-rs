@@ -2,7 +2,7 @@
 
 use cjrh_moreutils_common::plain_os_error;
 #[cfg(unix)]
-use nix::sys::signal::{Signal, raise};
+use signal_hook::low_level::emulate_default_handler;
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
@@ -224,10 +224,7 @@ fn main() {
         if e.kind() == io::ErrorKind::BrokenPipe {
             #[cfg(unix)]
             {
-                unsafe {
-                    libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-                }
-                let _ = raise(Signal::SIGPIPE);
+                let _ = emulate_default_handler(libc::SIGPIPE);
             }
         }
         die_io("write failure", e);
