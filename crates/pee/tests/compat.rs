@@ -153,6 +153,23 @@ fn assert_compat(name: &str, args: &[&str], stdin: &[u8], cwd: &Path, extra_env:
     assert_same(name, &oracle, &ours);
 }
 
+fn assert_partial_write_error_contract(name: &str, output: &RunOutput, input: &[u8]) {
+    assert!(!output.timed_out, "{name}: timed out");
+    assert_eq!(output.status.code, Some(1), "{name}: status");
+    #[cfg(unix)]
+    assert_eq!(output.status.signal, None, "{name}: signal");
+    assert!(
+        input.starts_with(&output.stdout),
+        "{name}: stdout={}",
+        render_bytes(&output.stdout)
+    );
+    assert!(
+        output.stdout.len() < input.len(),
+        "{name}: forwarded all input"
+    );
+    assert_eq!(output.stderr, b"Write error to `true'\n", "{name}: stderr");
+}
+
 fn assert_same(name: &str, oracle: &RunOutput, ours: &RunOutput) {
     if oracle != ours {
         panic!(
@@ -248,16 +265,6 @@ fn cli_parsing_options_and_command_errors_match() {
             b"abc",
         ),
         (
-            "option after first command is a command",
-            &["cat", "--ignore-sigpipe"],
-            b"x",
-        ),
-        (
-            "unknown option is a command",
-            &["--definitely-not-a-pee-option", "cat"],
-            b"x",
-        ),
-        (
             "command not found",
             &["definitely-not-a-pee-compat-command"],
             b"x",
@@ -266,6 +273,34 @@ fn cli_parsing_options_and_command_errors_match() {
 
     for (name, args, stdin) in cases {
         assert_compat(name, args, stdin, cwd, &[]);
+    }
+
+    // Fedora's pee passes option-like command strings straight to `sh -c`,
+    // while Ubuntu's shell rejects them as shell flags. We intentionally pass
+    // `--` so they are commands; assert that stable contract directly.
+    for (name, args, command) in [
+        (
+            "option after first command is a command",
+            &["cat", "--ignore-sigpipe"][..],
+            "--ignore-sigpipe",
+        ),
+        (
+            "unknown option is a command",
+            &["--definitely-not-a-pee-option", "cat"][..],
+            "--definitely-not-a-pee-option",
+        ),
+    ] {
+        let ours = run_pee(OURS, args, b"x", cwd, &[]);
+        assert!(!ours.timed_out, "{name}: timed out");
+        assert_eq!(ours.status.code, Some(127), "{name}: status");
+        #[cfg(unix)]
+        assert_eq!(ours.status.signal, None, "{name}: signal");
+        assert_eq!(ours.stdout, b"x", "{name}: stdout");
+        assert!(
+            String::from_utf8_lossy(&ours.stderr).contains(command),
+            "{name}: stderr={}",
+            render_bytes(&ours.stderr)
+        );
     }
 }
 
@@ -400,10 +435,6 @@ fn sigpipe_and_write_error_options_match() {
             &["--no-ignore-write-errors", "true"],
         ),
         (
-            "no ignore write errors stops before later consumers",
-            &["--no-ignore-write-errors", "true", "cat"],
-        ),
-        (
             "no ignore sigpipe dies from SIGPIPE",
             &["--no-ignore-sigpipe", "true"],
         ),
@@ -428,6 +459,23 @@ fn sigpipe_and_write_error_options_match() {
     for (name, args) in cases {
         assert_compat(name, args, &input, cwd, &[]);
     }
+
+    // Scheduling and upstream's read-buffer size differ by distribution, so the
+    // later `cat` receives a different valid prefix (possibly no bytes) before
+    // writing to `true` fails. Verify the failure contract, not the prefix size.
+    let args = ["--no-ignore-write-errors", "true", "cat"];
+    let oracle = run_pee(ORACLE, &args, &input, cwd, &[]);
+    let ours = run_pee(OURS, &args, &input, cwd, &[]);
+    assert_partial_write_error_contract(
+        "no ignore write errors stops before later consumers (oracle)",
+        &oracle,
+        &input,
+    );
+    assert_partial_write_error_contract(
+        "no ignore write errors stops before later consumers (ours)",
+        &ours,
+        &input,
+    );
 }
 
 #[test]

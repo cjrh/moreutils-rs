@@ -219,6 +219,23 @@ fn render_bytes(bytes: &[u8]) -> String {
     format!("len={} b\"{}\"", bytes.len(), rendered)
 }
 
+fn assert_listing_numbers_equivalent(oracle: &[u8], ours: &[u8]) {
+    fn normalize(bytes: &[u8]) -> Vec<(usize, String)> {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .map(|line| {
+                let (number, path) = line.split_once('\t').expect("item number and path");
+                (
+                    number.parse().expect("numeric item number"),
+                    path.to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    assert_eq!(normalize(oracle), normalize(ours));
+}
+
 fn make_editor(root: &Path, name: &str, body: &str) -> PathBuf {
     let path = root.join(name);
     fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -340,19 +357,17 @@ fn listing_format_sorting_hidden_files_and_visual_precedence_match() {
         ],
     );
     assert_same("listing format and VISUAL precedence", &oracle, &ours);
-    assert_eq!(
-        fs::read(&oracle_record).unwrap(),
-        fs::read(&ours_record).unwrap()
-    );
+    let oracle_listing = fs::read(&oracle_record).unwrap();
+    let ours_listing = fs::read(&ours_record).unwrap();
+    // Ubuntu's older vidir leaves numbers unpadded; newer releases pad them.
+    // Number/path pairing is the portable upstream contract.
+    assert_listing_numbers_equivalent(&oracle_listing, &ours_listing);
 
     #[cfg(unix)]
     let expected = "0001\t./.hidden\n0002\t./a\n0003\t./b\n0004\t./dir\n0005\t./link\n";
     #[cfg(not(unix))]
     let expected = "0001\t./.hidden\n0002\t./a\n0003\t./b\n0004\t./dir\n";
-    assert_eq!(
-        String::from_utf8(fs::read(&oracle_record).unwrap()).unwrap(),
-        expected
-    );
+    assert_eq!(String::from_utf8(ours_listing).unwrap(), expected);
 }
 
 #[test]
@@ -390,12 +405,11 @@ fn explicit_dirs_files_missing_paths_and_dashdash_paths_match() {
         &[("RECORD", record_ours.to_str().unwrap())],
     );
     assert_same("explicit args and --", &oracle, &ours);
+    let oracle_listing = fs::read(&record_oracle).unwrap();
+    let ours_listing = fs::read(&record_ours).unwrap();
+    assert_listing_numbers_equivalent(&oracle_listing, &ours_listing);
     assert_eq!(
-        fs::read(&record_oracle).unwrap(),
-        fs::read(&record_ours).unwrap()
-    );
-    assert_eq!(
-        String::from_utf8(fs::read(&record_oracle).unwrap()).unwrap(),
+        String::from_utf8(ours_listing).unwrap(),
         "0001\td/a\n0002\td/b\n0003\tz\n0004\tmissing\n0005\t-foo\n"
     );
 }
@@ -493,12 +507,11 @@ fn hard_links_get_distinct_item_numbers_match() {
         &[("RECORD", record_ours.to_str().unwrap())],
     );
     assert_same("hard links", &oracle, &ours);
+    let oracle_listing = fs::read(&record_oracle).unwrap();
+    let ours_listing = fs::read(&record_ours).unwrap();
+    assert_listing_numbers_equivalent(&oracle_listing, &ours_listing);
     assert_eq!(
-        fs::read(&record_oracle).unwrap(),
-        fs::read(&record_ours).unwrap()
-    );
-    assert_eq!(
-        String::from_utf8(fs::read(&record_oracle).unwrap()).unwrap(),
+        String::from_utf8(ours_listing).unwrap(),
         "0001\t./a\n0002\t./z\n"
     );
 }

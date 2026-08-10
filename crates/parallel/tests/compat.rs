@@ -45,20 +45,35 @@ fn oracle_path() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    for path in ["/bin/parallel", "/usr/bin/parallel"] {
+    // GNU parallel diverts moreutils' binary to `parallel.moreutils` on Debian
+    // and Ubuntu. Prefer it so compatibility tests never select GNU parallel.
+    for path in [
+        "/bin/parallel.moreutils",
+        "/usr/bin/parallel.moreutils",
+        "/bin/parallel",
+        "/usr/bin/parallel",
+    ] {
         let path = PathBuf::from(path);
-        if path.exists() {
+        if path.exists() && !is_gnu_parallel(&path) {
             return Some(path);
         }
     }
     None
 }
 
+fn is_gnu_parallel(path: &Path) -> bool {
+    Command::new(path)
+        .arg("--version")
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).starts_with("GNU parallel"))
+        .unwrap_or(false)
+}
+
 fn require_oracle() -> Option<PathBuf> {
     let oracle = oracle_path();
     if oracle.is_none() {
         eprintln!(
-            "skipping parallel compatibility test: set MOREUTILS_PARALLEL_ORACLE or install /bin/parallel"
+            "skipping parallel compatibility test: set MOREUTILS_PARALLEL_ORACLE or install moreutils' parallel"
         );
     }
     oracle
