@@ -2,7 +2,6 @@
 
 use cjrh_moreutils_common::plain_os_error;
 use nix::ifaddrs::{InterfaceAddress, getifaddrs};
-use nix::sys::signal::{Signal, raise};
 use nix::sys::socket::SockaddrStorage;
 use std::env;
 use std::fs;
@@ -59,10 +58,9 @@ fn iface_not_found(iface: &str) -> ! {
     std::process::exit(1)
 }
 
-fn stack_smash_abort() -> ! {
-    eprintln!("*** stack smashing detected ***: terminated");
-    let _ = raise(Signal::SIGABRT);
-    std::process::exit(134)
+fn stats_not_found(iface: &str) -> ! {
+    eprintln!("Error getting statistics for {iface}");
+    std::process::exit(1)
 }
 
 fn is_stats_or_rate(opt: &str) -> bool {
@@ -207,7 +205,7 @@ fn run_command(opt: &str, iface: &str) {
             println!("{}", if ex { "yes" } else { "no" });
             return;
         }
-        _ if !ex && is_stats_or_rate(opt) => stack_smash_abort(),
+        _ if !ex && is_stats_or_rate(opt) => stats_not_found(iface),
         _ if !ex => iface_not_found(iface),
         _ => {}
     }

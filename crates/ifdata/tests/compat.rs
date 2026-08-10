@@ -83,6 +83,21 @@ fn assert_compat(name: &str, args: &[&str]) {
     assert_same(name, &oracle, &ours);
 }
 
+fn assert_missing_stats_error(name: &str, args: &[&str]) {
+    let ours = run_ifdata(OURS, args);
+    assert_eq!(ours.status.code, Some(1), "{name}: status");
+    assert!(
+        ours.stdout.is_empty(),
+        "{name}: stdout={}",
+        render_bytes(&ours.stdout)
+    );
+    assert_eq!(
+        ours.stderr,
+        format!("Error getting statistics for {MISSING_IFACE}\n").into_bytes(),
+        "{name}: stderr"
+    );
+}
+
 fn assert_same(name: &str, oracle: &RunOutput, ours: &RunOutput) {
     if oracle != ours {
         panic!(
@@ -265,13 +280,21 @@ fn interface_existence_matches() {
         ("missing pm", &["-pm", MISSING_IFACE]),
         ("missing ph", &["-ph", MISSING_IFACE]),
         ("missing pf", &["-pf", MISSING_IFACE]),
-        ("missing si", &["-si", MISSING_IFACE]),
-        ("missing so", &["-so", MISSING_IFACE]),
-        ("missing bips", &["-bips", MISSING_IFACE]),
     ];
 
     for (name, args) in cases {
         assert_compat(name, args);
+    }
+
+    // Upstream ifdata varies by distro here: Fedora aborts with a stack-smash
+    // diagnostic, while Ubuntu reports a regular error. Require our stable,
+    // non-crashing error rather than compare a platform-specific defect.
+    for (name, args) in [
+        ("missing si", &["-si", MISSING_IFACE][..]),
+        ("missing so", &["-so", MISSING_IFACE][..]),
+        ("missing bips", &["-bips", MISSING_IFACE][..]),
+    ] {
+        assert_missing_stats_error(name, args);
     }
 }
 
