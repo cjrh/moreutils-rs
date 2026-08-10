@@ -141,6 +141,40 @@ fn network(addr: Ipv4Addr, mask: Ipv4Addr) -> Ipv4Addr {
     Ipv4Addr::from(u32::from(addr) & u32::from(mask))
 }
 
+fn ipv4_text(address: Option<Ipv4Addr>) -> String {
+    address.map_or_else(|| "NON-IP".to_owned(), |address| address.to_string())
+}
+
+fn network_text(address: Option<Ipv4Addr>, netmask: Option<Ipv4Addr>) -> String {
+    match (address, netmask) {
+        (Some(address), Some(netmask)) => network(address, netmask).to_string(),
+        _ => "NON-IP".to_owned(),
+    }
+}
+
+fn broadcast_text(address: Option<Ipv4Addr>, broadcast: Option<Ipv4Addr>) -> String {
+    if address.is_some() {
+        broadcast.unwrap_or(Ipv4Addr::UNSPECIFIED).to_string()
+    } else {
+        "NON-IP".to_owned()
+    }
+}
+
+fn config_text(
+    address: Option<Ipv4Addr>,
+    netmask: Option<Ipv4Addr>,
+    broadcast: Option<Ipv4Addr>,
+    mtu: i32,
+) -> String {
+    format!(
+        "{} {} {} {}",
+        ipv4_text(address),
+        ipv4_text(netmask),
+        broadcast_text(address, broadcast),
+        mtu
+    )
+}
+
 fn stats(iface: &str) -> Option<([u64; 8], [u64; 8])> {
     let text = fs::read_to_string("/proc/net/dev").unwrap_or_else(|e| {
         eprintln!("fopen(\"/proc/net/dev\"): {}", os_error_message(&e));
@@ -211,27 +245,17 @@ fn run_command(opt: &str, iface: &str) {
     }
 
     match opt {
-        "-p" => match (addr(iface), netmask(iface), mtu(iface)) {
-            (Some(a), Some(n), Some(m)) => println!(
-                "{} {} {} {}",
-                a,
-                n,
-                broadcast(iface).unwrap_or(Ipv4Addr::UNSPECIFIED),
-                m
+        "-p" => match mtu(iface) {
+            Some(mtu) => println!(
+                "{}",
+                config_text(addr(iface), netmask(iface), broadcast(iface), mtu)
             ),
-            _ => println!("NON-IP"),
+            None => println!("NON-IP"),
         },
-        "-pa" => addr(iface)
-            .map(|x| println!("{x}"))
-            .unwrap_or_else(|| fail()),
-        "-pn" => netmask(iface)
-            .map(|x| println!("{x}"))
-            .unwrap_or_else(|| fail()),
-        "-pN" => match (addr(iface), netmask(iface)) {
-            (Some(a), Some(n)) => println!("{}", network(a, n)),
-            _ => fail(),
-        },
-        "-pb" => println!("{}", broadcast(iface).unwrap_or(Ipv4Addr::UNSPECIFIED)),
+        "-pa" => println!("{}", ipv4_text(addr(iface))),
+        "-pn" => println!("{}", ipv4_text(netmask(iface))),
+        "-pN" => println!("{}", network_text(addr(iface), netmask(iface))),
+        "-pb" => println!("{}", broadcast_text(addr(iface), broadcast(iface))),
         "-pm" => mtu(iface)
             .map(|x| println!("{x}"))
             .unwrap_or_else(|| fail()),
@@ -346,5 +370,35 @@ fn main() {
 
     for opt in opts {
         run_command(opt, iface);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{broadcast_text, config_text, ipv4_text, network_text};
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn existing_non_ip_interface_values_are_rendered_as_non_ip() {
+        assert_eq!(ipv4_text(None), "NON-IP");
+        assert_eq!(network_text(None, None), "NON-IP");
+        assert_eq!(broadcast_text(None, None), "NON-IP");
+        assert_eq!(
+            config_text(None, None, None, 1400),
+            "NON-IP NON-IP NON-IP 1400"
+        );
+    }
+
+    #[test]
+    fn ipv4_values_and_missing_broadcast_are_rendered() {
+        let address = Some(Ipv4Addr::new(10, 23, 4, 5));
+        let netmask = Some(Ipv4Addr::new(255, 255, 255, 0));
+        assert_eq!(ipv4_text(address), "10.23.4.5");
+        assert_eq!(network_text(address, netmask), "10.23.4.0");
+        assert_eq!(broadcast_text(address, None), "0.0.0.0");
+        assert_eq!(
+            config_text(address, netmask, None, 1400),
+            "10.23.4.5 255.255.255.0 0.0.0.0 1400"
+        );
     }
 }

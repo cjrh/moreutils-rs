@@ -2,6 +2,7 @@
 
 use std::ffi::OsStr;
 use std::io::{self, Write};
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -190,34 +191,44 @@ fn assert_rate_compat(name: &str, args: &[&str]) {
     );
 }
 
+fn non_loopback_interfaces() -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
+        return Vec::new();
+    };
+    let mut names: Vec<_> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != LOOPBACK)
+        .collect();
+    names.sort();
+    names
+}
+
 fn first_non_loopback_with_hardware_address() -> Option<String> {
-    let entries = std::fs::read_dir("/sys/class/net").ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name == LOOPBACK {
-            continue;
-        }
-        let address = std::fs::read_to_string(entry.path().join("address")).unwrap_or_default();
+    non_loopback_interfaces().into_iter().find(|name| {
+        let address =
+            std::fs::read_to_string(Path::new("/sys/class/net").join(name).join("address"))
+                .unwrap_or_default();
         let address = address.trim();
-        if !address.is_empty() && address != "00:00:00:00:00:00" {
-            return Some(name);
-        }
-    }
-    None
+        !address.is_empty() && address != "00:00:00:00:00:00"
+    })
 }
 
 fn first_non_loopback_with_ipv4() -> Option<String> {
-    let entries = std::fs::read_dir("/sys/class/net").ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name == LOOPBACK {
-            continue;
-        }
-        if run_ifdata(ORACLE, &["-pa", &name]).status.code == Some(0) {
-            return Some(name);
-        }
-    }
-    None
+    non_loopback_interfaces().into_iter().find(|name| {
+        let output = run_ifdata(ORACLE, &["-pa", name]);
+        output.status.code == Some(0)
+            && std::str::from_utf8(&output.stdout)
+                .ok()
+                .is_some_and(|stdout| stdout.trim().parse::<Ipv4Addr>().is_ok())
+    })
+}
+
+fn first_non_loopback_without_ipv4() -> Option<String> {
+    non_loopback_interfaces().into_iter().find(|name| {
+        let output = run_ifdata(ORACLE, &["-pa", name]);
+        output.status.code == Some(0) && output.stdout == b"NON-IP\n"
+    })
 }
 
 #[test]
@@ -299,7 +310,7 @@ fn interface_existence_matches() {
 }
 
 #[test]
-fn loopback_ipv4_configuration_matches() {
+fn ipv4_and_non_ip_configuration_match() {
     let cases: &[(&str, &[&str])] = &[
         ("whole config", &["-p", LOOPBACK]),
         ("address", &["-pa", LOOPBACK]),
@@ -321,6 +332,20 @@ fn loopback_ipv4_configuration_matches() {
             ("non-loopback network", &["-pN", &iface]),
             ("non-loopback broadcast", &["-pb", &iface]),
             ("non-loopback mtu", &["-pm", &iface]),
+        ];
+        for (name, args) in cases {
+            assert_compat(name, args);
+        }
+    }
+
+    if let Some(iface) = first_non_loopback_without_ipv4() {
+        let cases: &[(&str, &[&str])] = &[
+            ("non-IP whole config", &["-p", &iface]),
+            ("non-IP address", &["-pa", &iface]),
+            ("non-IP netmask", &["-pn", &iface]),
+            ("non-IP network", &["-pN", &iface]),
+            ("non-IP broadcast", &["-pb", &iface]),
+            ("non-IP mtu", &["-pm", &iface]),
         ];
         for (name, args) in cases {
             assert_compat(name, args);
