@@ -238,10 +238,12 @@ fn cli_parsing_options_and_command_errors_match() {
         ("no args consumes stdin", &[], b"ignored input\n"),
         ("one true command", &["true"], b"abc"),
         ("one cat command", &["cat"], b"abc"),
+        // Supplying input here races child exit against the first pipe write,
+        // producing scheduler-dependent status codes across distributions.
         (
             "multiple commands without output",
             &["true", "true", ":"],
-            b"abc",
+            b"",
         ),
         ("empty command string", &[""], b"abc"),
         (
