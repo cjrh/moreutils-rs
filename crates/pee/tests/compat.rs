@@ -170,6 +170,41 @@ fn assert_partial_write_error_contract(name: &str, output: &RunOutput, input: &[
     assert_eq!(output.stderr, b"Write error to `true'\n", "{name}: stderr");
 }
 
+fn sorted_lines(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut lines: Vec<_> = bytes
+        .split_inclusive(|byte| *byte == b'\n')
+        .map(<[u8]>::to_vec)
+        .collect();
+    lines.sort();
+    lines
+}
+
+fn assert_success_with_unordered_lines(
+    name: &str,
+    output: &RunOutput,
+    expected_stdout: &[u8],
+    expected_stderr: &[u8],
+) {
+    assert!(!output.timed_out, "{name}: timed out");
+    assert_eq!(output.status.code, Some(0), "{name}: status");
+    #[cfg(unix)]
+    assert_eq!(output.status.signal, None, "{name}: signal");
+    assert_eq!(
+        sorted_lines(&output.stdout),
+        sorted_lines(expected_stdout),
+        "{name}: stdout={} expected={}",
+        render_bytes(&output.stdout),
+        render_bytes(expected_stdout)
+    );
+    assert_eq!(
+        sorted_lines(&output.stderr),
+        sorted_lines(expected_stderr),
+        "{name}: stderr={} expected={}",
+        render_bytes(&output.stderr),
+        render_bytes(expected_stderr)
+    );
+}
+
 fn assert_same(name: &str, oracle: &RunOutput, ours: &RunOutput) {
     if oracle != ours {
         panic!(
@@ -236,16 +271,14 @@ fn cli_parsing_options_and_command_errors_match() {
     let cases: &[(&str, &[&str], &[u8])] = &[
         ("no args empty stdin", &[], b""),
         ("no args consumes stdin", &[], b"ignored input\n"),
-        ("one true command", &["true"], b"abc"),
+        ("one true command", &["true"], b""),
         ("one cat command", &["cat"], b"abc"),
-        // Supplying input here races child exit against the first pipe write,
-        // producing scheduler-dependent status codes across distributions.
         (
             "multiple commands without output",
             &["true", "true", ":"],
             b"",
         ),
-        ("empty command string", &[""], b"abc"),
+        ("empty command string", &[""], b""),
         (
             "ignore sigpipe option",
             &["--ignore-sigpipe", "cat"],
@@ -269,7 +302,7 @@ fn cli_parsing_options_and_command_errors_match() {
         (
             "command not found",
             &["definitely-not-a-pee-compat-command"],
-            b"x",
+            b"",
         ),
     ];
 
@@ -292,12 +325,12 @@ fn cli_parsing_options_and_command_errors_match() {
             "--definitely-not-a-pee-option",
         ),
     ] {
-        let ours = run_pee(OURS, args, b"x", cwd, &[]);
+        let ours = run_pee(OURS, args, b"", cwd, &[]);
         assert!(!ours.timed_out, "{name}: timed out");
         assert_eq!(ours.status.code, Some(127), "{name}: status");
         #[cfg(unix)]
         assert_eq!(ours.status.signal, None, "{name}: signal");
-        assert_eq!(ours.stdout, b"x", "{name}: stdout");
+        assert_eq!(ours.stdout, b"", "{name}: stdout");
         assert!(
             String::from_utf8_lossy(&ours.stderr).contains(command),
             "{name}: stderr={}",
@@ -341,8 +374,8 @@ fn stdout_stderr_and_no_implicit_echo_match() {
     let cwd = temp.path();
     let cases: &[(&str, &[&str], &[u8])] = &[
         (
-            "no implicit stdout without cat",
-            &["true"],
+            "no implicit stdout from a consuming command",
+            &["cat >/dev/null"],
             b"input that is not echoed\n",
         ),
         (
@@ -356,24 +389,6 @@ fn stdout_stderr_and_no_implicit_echo_match() {
             b"payload\n",
         ),
         (
-            "multiple commands deterministic stdout order",
-            &[
-                "cat >/dev/null; printf 'one\\n'",
-                "cat >/dev/null; sleep 0.05; printf 'two\\n'",
-                "cat >/dev/null; sleep 0.10; printf 'three\\n'",
-            ],
-            b"payload\n",
-        ),
-        (
-            "multiple commands deterministic stderr order",
-            &[
-                "cat >/dev/null; printf 'err-one\\n' >&2",
-                "cat >/dev/null; sleep 0.05; printf 'err-two\\n' >&2",
-                "cat >/dev/null; sleep 0.10; printf 'err-three\\n' >&2",
-            ],
-            b"payload\n",
-        ),
-        (
             "slow command output",
             &[
                 "perl -e '$|=1; while (read STDIN, my $b, 4096) {} for (1..3) { print qq(chunk$_\\n); select undef, undef, undef, 0.02 }'",
@@ -384,6 +399,41 @@ fn stdout_stderr_and_no_implicit_echo_match() {
 
     for (name, args, stdin) in cases {
         assert_compat(name, args, stdin, cwd, &[]);
+    }
+
+    // Output from concurrent children has no defined order. Compare complete
+    // lines as a multiset instead of comparing two independently scheduled runs.
+    for (name, args, expected_stdout, expected_stderr) in [
+        (
+            "multiple commands stdout lines",
+            &[
+                "cat >/dev/null; printf 'one\\n'",
+                "cat >/dev/null; printf 'two\\n'",
+                "cat >/dev/null; printf 'three\\n'",
+            ][..],
+            &b"one\ntwo\nthree\n"[..],
+            &b""[..],
+        ),
+        (
+            "multiple commands stderr lines",
+            &[
+                "cat >/dev/null; printf 'err-one\\n' >&2",
+                "cat >/dev/null; printf 'err-two\\n' >&2",
+                "cat >/dev/null; printf 'err-three\\n' >&2",
+            ][..],
+            &b""[..],
+            &b"err-one\nerr-two\nerr-three\n"[..],
+        ),
+    ] {
+        for (implementation, program) in [("oracle", ORACLE), ("ours", OURS)] {
+            let output = run_pee(program, args, b"payload\n", cwd, &[]);
+            assert_success_with_unordered_lines(
+                &format!("{name} ({implementation})"),
+                &output,
+                expected_stdout,
+                expected_stderr,
+            );
+        }
     }
 }
 
@@ -415,8 +465,10 @@ fn exit_status_aggregation_and_child_signals_match() {
         ),
     ];
 
+    // These cases test child status handling. Non-empty input would introduce
+    // an unrelated race between each short-lived child and the first pipe write.
     for (name, args) in cases {
-        assert_compat(name, args, b"trigger\n", cwd, &[]);
+        assert_compat(name, args, b"", cwd, &[]);
     }
 }
 
@@ -503,7 +555,19 @@ fn shell_command_semantics_environment_cwd_and_redirections_match() {
         &[("PEE_TOKEN", "from-env")],
     );
     let ours = run_pee(OURS, &args, input, &ours_dir, &[("PEE_TOKEN", "from-env")]);
-    assert_same("shell command semantics", &oracle, &ours);
+    let expected_stdout = b"token=from-env lines=2\nsorted=ab\n";
+    assert_success_with_unordered_lines(
+        "shell command semantics (oracle)",
+        &oracle,
+        expected_stdout,
+        b"",
+    );
+    assert_success_with_unordered_lines(
+        "shell command semantics (ours)",
+        &ours,
+        expected_stdout,
+        b"",
+    );
     for dir in [&oracle_dir, &ours_dir] {
         assert_file_bytes(&dir.join("sp ace"), input);
         assert_file_bytes(&dir.join("sorted"), b"a\nb\n");
