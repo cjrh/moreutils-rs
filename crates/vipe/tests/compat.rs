@@ -253,6 +253,24 @@ fn assert_same(name: &str, oracle: &RunOutput, ours: &RunOutput) {
     }
 }
 
+fn assert_same_nonzero_contract(name: &str, oracle: &RunOutput, ours: &RunOutput) {
+    for (implementation, output) in [("oracle", oracle), ("ours", ours)] {
+        assert!(!output.timed_out, "{name} ({implementation}): timed out");
+        assert!(
+            output.status.code.is_some_and(|code| code != 0),
+            "{name} ({implementation}): status={:?}",
+            output.status
+        );
+        assert_eq!(
+            output.status.signal, None,
+            "{name} ({implementation}): signal"
+        );
+    }
+    assert_eq!(oracle.stdout, ours.stdout, "{name}: stdout mismatch");
+    assert_eq!(oracle.stderr, ours.stderr, "{name}: stderr mismatch");
+    assert_eq!(oracle.tty, ours.tty, "{name}: tty mismatch");
+}
+
 fn assert_same_except_path_stderr(name: &str, oracle: &RunOutput, ours: &RunOutput) {
     assert_eq!(
         oracle.timed_out, ours.timed_out,
@@ -331,7 +349,9 @@ fn cli_parsing_suffix_extra_args_and_diagnostics_match() {
     ] {
         let oracle = run_vipe(ORACLE, &args, b"ignored", cwd, &[]);
         let ours = run_vipe(OURS, &args, b"ignored", cwd, &[]);
-        assert_same(name, &oracle, &ours);
+        // These errors exit through Perl `die`, whose numeric status can depend
+        // on ambient `$!` state rather than the error being reported.
+        assert_same_nonzero_contract(name, &oracle, &ours);
     }
 
     let editor = make_editor(
@@ -535,7 +555,9 @@ fn editor_selection_argument_splitting_visual_precedence_and_failures_match() {
         temp.path(),
         &[("EDITOR", fail.to_str().unwrap())],
     );
-    assert_same("failing editor", &oracle, &ours);
+    // Upstream exits through Perl `die`; the exact status varies with stale
+    // `$!` state across Perl and moreutils builds.
+    assert_same_nonzero_contract("failing editor", &oracle, &ours);
     assert_eq!(oracle.stdout, b"");
 
     let oracle = run_vipe(
@@ -552,7 +574,7 @@ fn editor_selection_argument_splitting_visual_precedence_and_failures_match() {
         temp.path(),
         &[("EDITOR", "/no/such/vipe-editor")],
     );
-    assert_same("missing editor executable", &oracle, &ours);
+    assert_same_nonzero_contract("missing editor executable", &oracle, &ours);
     assert_eq!(oracle.stdout, b"");
 }
 
