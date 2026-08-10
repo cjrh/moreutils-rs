@@ -222,7 +222,6 @@ fn cli_parsing_usage_and_exec_errors_match() {
             &["-x", "true"],
             b"",
         ),
-        ("dashdash is just command", &["--", "true"], b"x"),
         (
             "command not found",
             &["definitely-not-an-ifne-compat-command"],
@@ -243,6 +242,16 @@ fn cli_parsing_usage_and_exec_errors_match() {
     for (name, args, stdin) in cases {
         assert_compat(name, args, stdin, cwd, &[]);
     }
+
+    // Upstream's parent can race its failed exec and die from SIGPIPE while
+    // writing stdin. Our direct exec failure is deterministic and preserves
+    // the same diagnostic, so do not compare that timing-dependent status.
+    let ours = run_ifne(OURS, &["--", "true"], b"x", cwd, &[]);
+    assert_eq!(ours.status.code, Some(1));
+    #[cfg(unix)]
+    assert_eq!(ours.status.signal, None);
+    assert!(ours.stdout.is_empty());
+    assert_eq!(ours.stderr, b"--: No such file or directory\n");
 }
 
 #[test]
@@ -421,8 +430,10 @@ fn command_arguments_environment_cwd_and_path_lookup_match() {
     );
 
     assert!(Path::new(ORACLE).exists());
-    let oracle = run_ifne_without_path(ORACLE, &["true"], b"x", cwd);
-    let ours = run_ifne_without_path(OURS, &["true"], b"x", cwd);
+    // Keep the child alive until its stdin is written: `true` can exit before
+    // either ifne writes, making the upstream SIGPIPE behavior timing-dependent.
+    let oracle = run_ifne_without_path(ORACLE, &["sh", "-c", "cat >/dev/null"], b"x", cwd);
+    let ours = run_ifne_without_path(OURS, &["sh", "-c", "cat >/dev/null"], b"x", cwd);
     assert_same("unset PATH command lookup", &oracle, &ours);
 }
 
