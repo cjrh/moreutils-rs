@@ -2,10 +2,7 @@
 
 use cjrh_moreutils_common::plain_os_error;
 #[cfg(unix)]
-use nix::sys::{
-    signal::{Signal, raise},
-    stat::{Mode, umask},
-};
+use nix::sys::stat::{Mode, umask};
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -164,11 +161,6 @@ fn os_error_message(err: &io::Error) -> String {
 }
 
 fn terminate_by_signal(signal: i32) -> ! {
-    unsafe {
-        libc::signal(signal, libc::SIG_DFL);
-    }
-    if let Ok(signal) = Signal::try_from(signal) {
-        let _ = raise(signal);
-    }
+    let _ = signal_hook::low_level::emulate_default_handler(signal);
     std::process::exit(128 + signal);
 }

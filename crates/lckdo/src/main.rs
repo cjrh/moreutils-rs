@@ -271,17 +271,20 @@ fn duplicate_to_fd(file: File, target: RawFd) -> io::Result<File> {
         return Err(io::Error::from_raw_os_error(libc::EBADF));
     }
 
-    // SAFETY: `target` is intentionally an arbitrary descriptor selected by
-    // lckdo's -E option. On success, dup2 transfers ownership of that target
-    // to this function; the source File is dropped before returning the new
-    // File so the two handles never own the same descriptor.
+    // SAFETY: -E deliberately accepts an arbitrary descriptor number, which
+    // may be closed or may replace a descriptor that Rust does not own. Safe
+    // descriptor APIs require an `OwnedFd` target and cannot express that
+    // contract. `source` is borrowed from the live `file`, `source != target`
+    // was checked above, and `target` was parsed as a non-negative `RawFd`.
+    // POSIX dup2 atomically closes any old target and returns a new descriptor.
     let duplicated = unsafe { libc::dup2(source, target) };
     if duplicated < 0 {
         return Err(io::Error::last_os_error());
     }
     drop(file);
-    // SAFETY: dup2 succeeded and `source != target`, so `duplicated` is a
-    // newly owned, valid descriptor that is not owned by another File.
+    // SAFETY: successful dup2 returned this newly-open descriptor. The
+    // source `File` was dropped above, and this binary creates no other Rust
+    // owner for `target`, so this `File` is its sole owner and will close it.
     Ok(unsafe { File::from_raw_fd(duplicated) })
 }
 
@@ -469,10 +472,17 @@ fn exit_like_lckdo(program: &str, status: ExitStatus) -> ! {
 }
 
 fn signal_description(signal: i32) -> String {
+    // SAFETY: `signal` comes from `ExitStatusExt::signal`, hence is a signal
+    // number reported by the kernel. strsignal accepts such an integer and
+    // returns either null or a borrowed, NUL-terminated static C string; it
+    // takes no ownership and this code does not retain its pointer.
     let ptr = unsafe { libc::strsignal(signal) };
     if ptr.is_null() {
         format!("signal {signal}")
     } else {
+        // SAFETY: the null check above and strsignal's contract establish that
+        // `ptr` points to a NUL-terminated C string valid for this conversion.
+        // The result is copied into an owned String before returning.
         unsafe { CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned()

@@ -129,15 +129,22 @@ fn exit_with_child_status(status: ExitStatus) -> ! {
 }
 
 fn terminate_by_signal(signal: i32) -> ! {
+    // SAFETY: `signal` is either SIGPIPE or a number from
+    // `ExitStatusExt::signal`, so the kernel has reported it as a valid signal.
+    // Restoring SIG_DFL is required before raising it: an ignored disposition
+    // may have been inherited across exec, but ifne must itself terminate with
+    // the same signal. This single-threaded binary changes the disposition only
+    // while exiting, and SIG_DFL is the libc-defined default-handler value.
     unsafe {
         libc::signal(signal, libc::SIG_DFL);
     }
     if let Ok(signal) = Signal::try_from(signal) {
         let _ = raise(signal);
     } else {
-        // SAFETY: the child can exit with a valid realtime signal which Nix's
-        // portable Signal enum does not represent. The signal value came from
-        // the operating system and is passed through unchanged.
+        // SAFETY: nix deliberately does not represent realtime signals, but
+        // ExitStatusExt obtained this valid signal number from the kernel.
+        // libc::raise accepts that raw number; the default disposition above
+        // ensures it terminates rather than being ignored.
         unsafe {
             libc::raise(signal);
         }
