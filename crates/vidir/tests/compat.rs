@@ -200,6 +200,24 @@ fn assert_same(name: &str, oracle: &RunOutput, ours: &RunOutput) {
     }
 }
 
+fn assert_same_nonzero_contract(name: &str, oracle: &RunOutput, ours: &RunOutput) {
+    for (implementation, output) in [("oracle", oracle), ("ours", ours)] {
+        assert!(!output.timed_out, "{name} ({implementation}): timed out");
+        assert!(
+            output.status.code.is_some_and(|code| code != 0),
+            "{name} ({implementation}): status={:?}",
+            output.status
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            output.status.signal, None,
+            "{name} ({implementation}): signal"
+        );
+    }
+    assert_eq!(oracle.stdout, ours.stdout, "{name}: stdout mismatch");
+    assert_eq!(oracle.stderr, ours.stderr, "{name}: stderr mismatch");
+}
+
 fn render_bytes(bytes: &[u8]) -> String {
     const LIMIT: usize = 512;
     let mut rendered = String::new();
@@ -524,7 +542,7 @@ fn malformed_duplicate_unknown_options_editor_failures_and_control_names_match()
     let (oracle, ours, oracle_dir, ours_dir) = run_pair(temp.path(), &[], bad_line, |dir| {
         fs::write(dir.join("a"), b"A").unwrap();
     });
-    assert_same("malformed editor line", &oracle, &ours);
+    assert_same_nonzero_contract("malformed editor line", &oracle, &ours);
     assert_snapshots_equal("malformed editor line", &oracle_dir, &ours_dir);
 
     let dup_temp = tempfile::tempdir().unwrap();
@@ -533,7 +551,7 @@ fn malformed_duplicate_unknown_options_editor_failures_and_control_names_match()
         fs::write(dir.join("a"), b"A").unwrap();
         fs::write(dir.join("b"), b"B").unwrap();
     });
-    assert_same("duplicate item number", &oracle, &ours);
+    assert_same_nonzero_contract("duplicate item number", &oracle, &ours);
     assert_snapshots_equal("duplicate item number", &oracle_dir, &ours_dir);
 
     let stdin_temp = tempfile::tempdir().unwrap();
@@ -546,7 +564,7 @@ fn malformed_duplicate_unknown_options_editor_failures_and_control_names_match()
     fs::write(ours_dir.join("a"), b"A").unwrap();
     let oracle = run_vidir_with_stdin(ORACLE, &["-"], b"a\n", &oracle_dir, &editor);
     let ours = run_vidir_with_stdin(OURS, &["-"], b"a\n", &ours_dir, &editor);
-    assert_same("stdin dash without controlling tty", &oracle, &ours);
+    assert_same_nonzero_contract("stdin dash without controlling tty", &oracle, &ours);
     assert_snapshots_equal("stdin dash without controlling tty", &oracle_dir, &ours_dir);
 
     let opt_temp = tempfile::tempdir().unwrap();
@@ -556,7 +574,7 @@ fn malformed_duplicate_unknown_options_editor_failures_and_control_names_match()
     fs::create_dir_all(&ours_dir).unwrap();
     let oracle = run_vidir_no_editor(ORACLE, &["-x"], &oracle_dir);
     let ours = run_vidir_no_editor(OURS, &["-x"], &ours_dir);
-    assert_same("unknown option", &oracle, &ours);
+    assert_same_nonzero_contract("unknown option", &oracle, &ours);
 
     let fail_temp = tempfile::tempdir().unwrap();
     let failing_editor = make_editor(fail_temp.path(), "fail.sh", "exit 42");
@@ -568,7 +586,9 @@ fn malformed_duplicate_unknown_options_editor_failures_and_control_names_match()
     fs::write(ours_dir.join("a"), b"A").unwrap();
     let oracle = run_vidir(ORACLE, &[], &oracle_dir, &failing_editor, &[]);
     let ours = run_vidir(OURS, &[], &ours_dir, &failing_editor, &[]);
-    assert_same("failing editor", &oracle, &ours);
+    // Upstream exits through Perl `die`, whose numeric status depends on stale
+    // `$!` state (for example ENOENT on Fedora and ENOTTY on Ubuntu).
+    assert_same_nonzero_contract("failing editor", &oracle, &ours);
     assert_snapshots_equal("failing editor", &oracle_dir, &ours_dir);
 
     #[cfg(unix)]
@@ -583,7 +603,7 @@ fn malformed_duplicate_unknown_options_editor_failures_and_control_names_match()
         fs::write(ours_dir.join("a\tb"), b"").unwrap();
         let oracle = run_vidir(ORACLE, &[], &oracle_dir, &editor, &[]);
         let ours = run_vidir(OURS, &[], &ours_dir, &editor, &[]);
-        assert_same("control character filename", &oracle, &ours);
+        assert_same_nonzero_contract("control character filename", &oracle, &ours);
         assert_snapshots_equal("control character filename", &oracle_dir, &ours_dir);
     }
 }
