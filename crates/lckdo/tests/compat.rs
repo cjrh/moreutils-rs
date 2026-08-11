@@ -245,7 +245,7 @@ fn reap_holder(child: Child) {
 }
 
 fn skip_if_root() -> bool {
-    unsafe { libc::geteuid() == 0 }
+    nix::unistd::geteuid().is_root()
 }
 
 #[test]

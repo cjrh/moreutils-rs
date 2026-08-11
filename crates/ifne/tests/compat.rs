@@ -149,6 +149,25 @@ fn assert_compat(name: &str, args: &[&str], stdin: &[u8], cwd: &Path, extra_env:
     assert_same(name, &oracle, &ours);
 }
 
+fn assert_exec_error_compat(name: &str, args: &[&str], stdin: &[u8], cwd: &Path) {
+    assert!(
+        Path::new(ORACLE).exists(),
+        "{ORACLE} is required for compatibility tests"
+    );
+    let oracle = run_ifne(ORACLE, args, stdin, cwd, &[]);
+    let ours = run_ifne(OURS, args, stdin, cwd, &[]);
+
+    // Once exec fails, upstream's parent can race its failed child and die from
+    // SIGPIPE while writing stdin. Compare its stable diagnostics, but require
+    // our deterministic direct-exec failure instead of its timing-dependent
+    // status.
+    assert_eq!(ours.status.code, Some(1), "{name}: status");
+    #[cfg(unix)]
+    assert_eq!(ours.status.signal, None, "{name}: signal");
+    assert_eq!(ours.stdout, oracle.stdout, "{name}: stdout");
+    assert_eq!(ours.stderr, oracle.stderr, "{name}: stderr");
+}
+
 fn assert_same(name: &str, oracle: &RunOutput, ours: &RunOutput) {
     if oracle != ours {
         panic!(
@@ -213,20 +232,9 @@ fn cli_parsing_usage_and_exec_errors_match() {
         ("no args", &[], b""),
         ("only -n", &["-n"], b""),
         (
-            "unknown option is just command when input is non-empty",
-            &["-x", "true"],
-            b"x",
-        ),
-        (
             "unknown option command skipped when input is empty",
             &["-x", "true"],
             b"",
-        ),
-        ("dashdash is just command", &["--", "true"], b"x"),
-        (
-            "command not found",
-            &["definitely-not-an-ifne-compat-command"],
-            b"x",
         ),
         (
             "reverse command not found on empty input",
@@ -242,6 +250,23 @@ fn cli_parsing_usage_and_exec_errors_match() {
 
     for (name, args, stdin) in cases {
         assert_compat(name, args, stdin, cwd, &[]);
+    }
+
+    let exec_error_cases: &[(&str, &[&str], &[u8])] = &[
+        (
+            "unknown option is just command when input is non-empty",
+            &["-x", "true"],
+            b"x",
+        ),
+        ("dashdash is just command", &["--", "true"], b"x"),
+        (
+            "command not found",
+            &["definitely-not-an-ifne-compat-command"],
+            b"x",
+        ),
+    ];
+    for (name, args, stdin) in exec_error_cases {
+        assert_exec_error_compat(name, args, stdin, cwd);
     }
 }
 
@@ -385,6 +410,23 @@ fn child_exit_status_signals_and_streams_match() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn realtime_child_signal_matches() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path();
+    let signal = libc::SIGRTMIN();
+    let command = format!("cat >/dev/null; kill -{signal} $$");
+
+    assert_compat(
+        "child killed by realtime signal",
+        &["sh", "-c", &command],
+        b"trigger\n",
+        cwd,
+        &[],
+    );
+}
+
 #[test]
 fn command_arguments_environment_cwd_and_path_lookup_match() {
     let temp = tempfile::tempdir().unwrap();
@@ -404,8 +446,10 @@ fn command_arguments_environment_cwd_and_path_lookup_match() {
     );
 
     assert!(Path::new(ORACLE).exists());
-    let oracle = run_ifne_without_path(ORACLE, &["true"], b"x", cwd);
-    let ours = run_ifne_without_path(OURS, &["true"], b"x", cwd);
+    // Keep the child alive until its stdin is written: `true` can exit before
+    // either ifne writes, making the upstream SIGPIPE behavior timing-dependent.
+    let oracle = run_ifne_without_path(ORACLE, &["sh", "-c", "cat >/dev/null"], b"x", cwd);
+    let ours = run_ifne_without_path(OURS, &["sh", "-c", "cat >/dev/null"], b"x", cwd);
     assert_same("unset PATH command lookup", &oracle, &ours);
 }
 

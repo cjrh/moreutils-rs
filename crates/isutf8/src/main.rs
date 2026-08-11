@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
+#![deny(unsafe_code)]
 
+use cjrh_moreutils_common::plain_os_error;
 use std::env;
-use std::ffi::CStr;
 use std::fs::File;
 use std::io::{self, Read};
 
@@ -448,13 +449,5 @@ fn print_os_error(prefix: &str, err: &io::Error) {
 }
 
 fn os_error_message(err: &io::Error) -> String {
-    if let Some(errno) = err.raw_os_error() {
-        unsafe {
-            let message = libc::strerror(errno);
-            if !message.is_null() {
-                return CStr::from_ptr(message).to_string_lossy().into_owned();
-            }
-        }
-    }
-    err.to_string()
+    plain_os_error(err)
 }

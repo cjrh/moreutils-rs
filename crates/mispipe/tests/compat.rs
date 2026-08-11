@@ -154,8 +154,7 @@ fn assert_compat(name: &str, args: &[&str], stdin: &[u8], cwd: &Path, extra_env:
 }
 
 fn assert_same(name: &str, oracle: &RunOutput, ours: &RunOutput) {
-    let status_match = oracle.status == ours.status
-        || is_sigpipe_race(oracle, ours);
+    let status_match = oracle.status == ours.status || is_sigpipe_race(oracle, ours);
     if oracle.timed_out != ours.timed_out
         || !status_match
         || oracle.stdout != ours.stdout
@@ -241,12 +240,27 @@ fn cli_arity_and_empty_commands_match() {
         ("empty command1", &["", "printf c2"]),
         ("empty command2", &["printf c1", ""]),
         ("both commands empty", &["", ""]),
-        ("option-looking command strings", &["-x", "cat"]),
     ];
 
     for (name, args) in cases {
         assert_compat(name, args, b"", cwd, &[]);
     }
+
+    // Distributions invoke `sh -c` differently for a command beginning with
+    // `-`: Fedora's moreutils passes `--`, while Ubuntu's does not. We
+    // intentionally pass `--` so the command is not interpreted as a shell
+    // flag; assert that stable contract directly.
+    let ours = run_mispipe(OURS, &["-x", "cat"], b"", cwd, &[]);
+    assert!(!ours.timed_out);
+    assert_eq!(ours.status.code, Some(127));
+    #[cfg(unix)]
+    assert_eq!(ours.status.signal, None);
+    assert!(ours.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&ours.stderr).contains("-x"),
+        "stderr={}",
+        render_bytes(&ours.stderr)
+    );
 }
 
 #[test]

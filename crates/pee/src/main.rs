@@ -118,6 +118,10 @@ fn pee_status_code(status: ExitStatus) -> i32 {
 #[cfg(unix)]
 fn set_sigpipe(ignore: bool) {
     let handler = if ignore { libc::SIG_IGN } else { libc::SIG_DFL };
+    // SAFETY: SIGPIPE and SIG_IGN/SIG_DFL are libc-defined values accepted by
+    // signal. This standalone binary intentionally changes its process-wide
+    // disposition once, before it spawns children or creates Rust threads; the
+    // ignored result preserves pee's historical best-effort behavior.
     unsafe {
         libc::signal(libc::SIGPIPE, handler);
     }
@@ -128,6 +132,12 @@ fn set_sigpipe(_ignore: bool) {}
 
 #[cfg(unix)]
 fn set_child_sigpipe(command: &mut std::process::Command, ignore: bool) {
+    // SAFETY: pre_exec runs after fork and before exec, where Rust operations
+    // that allocate or lock are forbidden. This closure captures only a Copy
+    // bool and calls only libc::signal, an async-signal-safe operation. SIGPIPE
+    // and the selected disposition are valid libc values. Setting it here is
+    // necessary because a child inherits the parent's disposition, while pee's
+    // option must apply independently to each command it launches.
     unsafe {
         command.pre_exec(move || {
             let handler = if ignore { libc::SIG_IGN } else { libc::SIG_DFL };

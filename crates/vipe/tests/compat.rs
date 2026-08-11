@@ -2,10 +2,11 @@
 
 #![cfg(unix)]
 
+use nix::pty::{OpenptyResult, openpty};
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -41,15 +42,19 @@ struct RunOutput {
     tty: Vec<u8>,
 }
 
-fn base_command<S: AsRef<OsStr>>(program: S, cwd: &Path) -> (Command, RawFd, RawFd) {
-    let (master, slave) = open_pty();
+fn base_command<S: AsRef<OsStr>>(program: S, cwd: &Path) -> (Command, OwnedFd, OwnedFd) {
+    let OpenptyResult { master, slave } = openpty(None, None).expect("openpty");
+    let slave_fd = slave.as_raw_fd();
     let mut command = Command::new(program);
+    // SAFETY: The closure runs between fork and exec and invokes only the
+    // async-signal-safe `setsid` and TIOCSCTTY operations on a live slave FD.
+    // `slave` remains owned by the parent until after `spawn` completes.
     unsafe {
         command.arg0("/bin/vipe").pre_exec(move || {
             if libc::setsid() == -1 {
                 return Err(io::Error::last_os_error());
             }
-            if libc::ioctl(slave, libc::TIOCSCTTY, 0) == -1 {
+            if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
@@ -64,22 +69,6 @@ fn base_command<S: AsRef<OsStr>>(program: S, cwd: &Path) -> (Command, RawFd, Raw
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     (command, master, slave)
-}
-
-fn open_pty() -> (RawFd, RawFd) {
-    let mut master = -1;
-    let mut slave = -1;
-    let rc = unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    assert_eq!(rc, 0, "openpty: {}", io::Error::last_os_error());
-    (master, slave)
 }
 
 fn run_vipe(
@@ -112,11 +101,14 @@ fn run_vipe_with_stdout_closed(
     finish_command_with_stdout_closed(command, master, slave, stdin)
 }
 
-fn finish_command(mut command: Command, master: RawFd, slave: RawFd, stdin: &[u8]) -> RunOutput {
+fn finish_command(
+    mut command: Command,
+    master: OwnedFd,
+    slave: OwnedFd,
+    stdin: &[u8],
+) -> RunOutput {
     let mut child = command.spawn().expect("spawn vipe");
-    unsafe {
-        libc::close(slave);
-    }
+    drop(slave);
     let pid = child.id();
 
     let writer = child.stdin.take().map(|mut child_stdin| {
@@ -150,14 +142,12 @@ fn finish_command(mut command: Command, master: RawFd, slave: RawFd, stdin: &[u8
 
 fn finish_command_with_stdout_closed(
     mut command: Command,
-    master: RawFd,
-    slave: RawFd,
+    master: OwnedFd,
+    slave: OwnedFd,
     stdin: &[u8],
 ) -> RunOutput {
     let mut child = command.spawn().expect("spawn vipe");
-    unsafe {
-        libc::close(slave);
-    }
+    drop(slave);
     let pid = child.id();
     drop(child.stdout.take());
 
@@ -208,8 +198,8 @@ fn read_all<R: Read>(mut reader: R, name: &str) -> Vec<u8> {
     bytes
 }
 
-fn read_pty(master: RawFd) -> Vec<u8> {
-    let mut file = unsafe { File::from_raw_fd(master) };
+fn read_pty(master: OwnedFd) -> Vec<u8> {
+    let mut file = File::from(master);
     let mut bytes = Vec::new();
     let mut buf = [0_u8; 4096];
     loop {
@@ -261,6 +251,24 @@ fn assert_same(name: &str, oracle: &RunOutput, ours: &RunOutput) {
             render_bytes(&ours.tty),
         );
     }
+}
+
+fn assert_same_nonzero_contract(name: &str, oracle: &RunOutput, ours: &RunOutput) {
+    for (implementation, output) in [("oracle", oracle), ("ours", ours)] {
+        assert!(!output.timed_out, "{name} ({implementation}): timed out");
+        assert!(
+            output.status.code.is_some_and(|code| code != 0),
+            "{name} ({implementation}): status={:?}",
+            output.status
+        );
+        assert_eq!(
+            output.status.signal, None,
+            "{name} ({implementation}): signal"
+        );
+    }
+    assert_eq!(oracle.stdout, ours.stdout, "{name}: stdout mismatch");
+    assert_eq!(oracle.stderr, ours.stderr, "{name}: stderr mismatch");
+    assert_eq!(oracle.tty, ours.tty, "{name}: tty mismatch");
 }
 
 fn assert_same_except_path_stderr(name: &str, oracle: &RunOutput, ours: &RunOutput) {
@@ -341,7 +349,9 @@ fn cli_parsing_suffix_extra_args_and_diagnostics_match() {
     ] {
         let oracle = run_vipe(ORACLE, &args, b"ignored", cwd, &[]);
         let ours = run_vipe(OURS, &args, b"ignored", cwd, &[]);
-        assert_same(name, &oracle, &ours);
+        // These errors exit through Perl `die`, whose numeric status can depend
+        // on ambient `$!` state rather than the error being reported.
+        assert_same_nonzero_contract(name, &oracle, &ours);
     }
 
     let editor = make_editor(
@@ -545,7 +555,9 @@ fn editor_selection_argument_splitting_visual_precedence_and_failures_match() {
         temp.path(),
         &[("EDITOR", fail.to_str().unwrap())],
     );
-    assert_same("failing editor", &oracle, &ours);
+    // Upstream exits through Perl `die`; the exact status varies with stale
+    // `$!` state across Perl and moreutils builds.
+    assert_same_nonzero_contract("failing editor", &oracle, &ours);
     assert_eq!(oracle.stdout, b"");
 
     let oracle = run_vipe(
@@ -562,7 +574,7 @@ fn editor_selection_argument_splitting_visual_precedence_and_failures_match() {
         temp.path(),
         &[("EDITOR", "/no/such/vipe-editor")],
     );
-    assert_same("missing editor executable", &oracle, &ours);
+    assert_same_nonzero_contract("missing editor executable", &oracle, &ours);
     assert_eq!(oracle.stdout, b"");
 }
 

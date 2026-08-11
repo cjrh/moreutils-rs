@@ -161,14 +161,24 @@ fn usage() {
 }
 
 fn set_initial_locale() {
+    let empty = c"";
+    // SAFETY: `LC_ALL` is a valid C locale category and `empty` is a static,
+    // NUL-terminated string borrowed for this call. `setlocale` changes
+    // process-global C state, so this binary calls it once on its only Rust
+    // thread before it performs locale-sensitive work or starts a child.
+    // A failed locale initialization is intentionally ignored to match errno.
     unsafe {
-        let empty = c"";
         libc::setlocale(libc::LC_ALL, empty.as_ptr());
     }
 }
 
 fn set_locale(locale: &str) {
     if let Ok(locale) = CString::new(locale) {
+        // SAFETY: `LC_ALL` is valid and `CString` guarantees a NUL-terminated
+        // buffer that remains alive throughout the call. Locale changes are
+        // serialized in `search_all_locales` on this single-threaded binary;
+        // `setlocale`'s null result is intentionally ignored for unavailable
+        // locales, matching errno's search-all-locales behavior.
         unsafe {
             libc::setlocale(libc::LC_ALL, locale.as_ptr());
         }
@@ -176,13 +186,20 @@ fn set_locale(locale: &str) {
 }
 
 fn desc_bytes(code: i32) -> Vec<u8> {
-    unsafe {
-        let p = libc::strerror(code);
-        if p.is_null() {
-            format!("Unknown error {code}").into_bytes()
-        } else {
-            CStr::from_ptr(p).to_bytes().to_vec()
-        }
+    // SAFETY: strerror accepts an errno value and returns either null or a
+    // borrowed, NUL-terminated message in the currently selected C locale.
+    // Its storage may be reused by later libc calls, so this single-threaded
+    // program copies the bytes immediately and never frees or retains `p`.
+    // A Rust String cannot represent legacy locale encodings losslessly; using
+    // the C bytes is required for errno's byte-for-byte output contract.
+    let p = unsafe { libc::strerror(code) };
+    if p.is_null() {
+        format!("Unknown error {code}").into_bytes()
+    } else {
+        // SAFETY: strerror's non-null result is a NUL-terminated C string
+        // valid until the next libc call that reuses its storage. to_bytes
+        // borrows it only long enough for to_vec to make an owned copy.
+        unsafe { CStr::from_ptr(p) }.to_bytes().to_vec()
     }
 }
 

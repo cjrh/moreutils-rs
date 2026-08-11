@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+use cjrh_moreutils_common::plain_os_error;
+use nix::ifaddrs::{InterfaceAddress, getifaddrs};
+use nix::sys::socket::{AddressFamily, SockFlag, SockType, SockaddrStorage, socket};
 use std::env;
-use std::ffi::CStr;
 use std::fs;
 use std::io;
 use std::mem;
-use std::net::Ipv4Addr;
-use std::os::fd::RawFd;
+use std::net::{Ipv4Addr, SocketAddrV4};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
 const COMMANDS: &[(&str, &str)] = &[
     ("-e", "Reports interface existence via return code"),
@@ -40,27 +42,6 @@ const COMMANDS: &[(&str, &str)] = &[
     ("-bops", "Print # of outgoing bytes per second"),
 ];
 
-struct Socket(RawFd);
-
-impl Socket {
-    fn new() -> io::Result<Self> {
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
-        if fd < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(Self(fd))
-        }
-    }
-}
-
-impl Drop for Socket {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.0);
-        }
-    }
-}
-
 fn usage() -> ! {
     eprintln!("Usage: /bin/ifdata [options] iface");
     for (opt, desc) in COMMANDS {
@@ -78,88 +59,164 @@ fn iface_not_found(iface: &str) -> ! {
     std::process::exit(1)
 }
 
-fn stack_smash_abort() -> ! {
-    eprintln!("*** stack smashing detected ***: terminated");
-    unsafe {
-        libc::raise(libc::SIGABRT);
-    }
-    std::process::exit(134)
+fn stats_not_found(iface: &str) -> ! {
+    eprintln!("Error getting statistics for {iface}");
+    std::process::exit(1)
 }
 
 fn is_stats_or_rate(opt: &str) -> bool {
     opt.starts_with("-si") || opt.starts_with("-so") || opt == "-bips" || opt == "-bops"
 }
 
+struct IoctlSocket(OwnedFd);
+
+impl IoctlSocket {
+    fn new() -> io::Result<Self> {
+        socket(
+            AddressFamily::Inet,
+            SockType::Datagram,
+            SockFlag::empty(),
+            None,
+        )
+        .map(Self)
+        .map_err(io::Error::from)
+    }
+}
+
+fn interfaces_for(iface: &str) -> io::Result<Vec<InterfaceAddress>> {
+    getifaddrs().map_err(io::Error::from).map(|interfaces| {
+        interfaces
+            .filter(|interface| interface.interface_name == iface)
+            .collect()
+    })
+}
+
 fn ifreq_for(iface: &str) -> libc::ifreq {
-    let mut ifr: libc::ifreq = unsafe { mem::zeroed() };
-    for (dst, src) in ifr.ifr_name.iter_mut().zip(iface.bytes()) {
+    // SAFETY: an all-zero ifreq is a valid starting value for these getter
+    // ioctls. The interface name is copied into its fixed-size buffer below.
+    let mut ifreq: libc::ifreq = unsafe { mem::zeroed() };
+    for (dst, src) in ifreq.ifr_name.iter_mut().zip(iface.bytes()) {
         *dst = src as libc::c_char;
     }
-    ifr
+    ifreq
 }
 
 fn ioctl_ifreq(fd: RawFd, iface: &str, request: libc::Ioctl) -> io::Result<libc::ifreq> {
-    let mut ifr = ifreq_for(iface);
-    let rc = unsafe { libc::ioctl(fd, request, &mut ifr) };
-    if rc < 0 {
+    let mut ifreq = ifreq_for(iface);
+    // SAFETY: fd is a live AF_INET datagram socket; request is one of the
+    // SIOCGIF* getter requests used below; and ifreq points to writable storage
+    // initialized with a bounded interface name.
+    let result = unsafe { libc::ioctl(fd, request, &mut ifreq) };
+    if result < 0 {
         Err(io::Error::last_os_error())
     } else {
-        Ok(ifr)
+        Ok(ifreq)
     }
 }
 
-fn exists(fd: RawFd, iface: &str) -> bool {
-    ioctl_ifreq(fd, iface, libc::SIOCGIFFLAGS as libc::Ioctl).is_ok()
+fn exists(iface: &str) -> bool {
+    interfaces_for(iface).is_ok_and(|interfaces| !interfaces.is_empty())
+}
+
+fn ipv4(address: &SockaddrStorage) -> Option<Ipv4Addr> {
+    let address: SocketAddrV4 = (*address.as_sockaddr_in()?).into();
+    Some(*address.ip())
+}
+
+fn addr(iface: &str) -> Option<Ipv4Addr> {
+    interfaces_for(iface)
+        .ok()?
+        .iter()
+        .find_map(|interface| interface.address.as_ref().and_then(ipv4))
+}
+
+fn netmask(iface: &str) -> Option<Ipv4Addr> {
+    interfaces_for(iface)
+        .ok()?
+        .iter()
+        .find_map(|interface| interface.netmask.as_ref().and_then(ipv4))
 }
 
 fn sockaddr_to_v4(sockaddr: libc::sockaddr) -> Option<Ipv4Addr> {
     if i32::from(sockaddr.sa_family) != libc::AF_INET {
         return None;
     }
-    let sin: libc::sockaddr_in = unsafe { mem::transmute(sockaddr) };
-    Some(Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr)))
-}
-
-fn ioctl_addr(fd: RawFd, iface: &str, request: libc::Ioctl) -> Option<Ipv4Addr> {
-    let ifr = ioctl_ifreq(fd, iface, request).ok()?;
-    let sockaddr = unsafe { ifr.ifr_ifru.ifru_addr };
-    sockaddr_to_v4(sockaddr)
-}
-
-fn addr(fd: RawFd, iface: &str) -> Option<Ipv4Addr> {
-    ioctl_addr(fd, iface, libc::SIOCGIFADDR as libc::Ioctl)
-}
-
-fn netmask(fd: RawFd, iface: &str) -> Option<Ipv4Addr> {
-    ioctl_addr(fd, iface, libc::SIOCGIFNETMASK as libc::Ioctl)
+    // SAFETY: SIOCGIF*ADDR populated this sockaddr with an AF_INET
+    // sockaddr_in. Both structures have the platform ABI layout expected by
+    // the ioctl, and the family check above verifies the active representation.
+    let address: libc::sockaddr_in = unsafe { mem::transmute(sockaddr) };
+    Some(Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)))
 }
 
 fn broadcast(fd: RawFd, iface: &str) -> Option<Ipv4Addr> {
-    ioctl_addr(fd, iface, libc::SIOCGIFBRDADDR as libc::Ioctl)
+    let ifreq = ioctl_ifreq(fd, iface, libc::SIOCGIFBRDADDR as libc::Ioctl).ok()?;
+    // SAFETY: a successful SIOCGIFBRDADDR initializes the address member of
+    // ifr_ifru, which is copied immediately and interpreted above.
+    let sockaddr = unsafe { ifreq.ifr_ifru.ifru_addr };
+    sockaddr_to_v4(sockaddr)
 }
 
 fn mtu(fd: RawFd, iface: &str) -> Option<i32> {
-    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFMTU as libc::Ioctl).ok()?;
-    Some(unsafe { ifr.ifr_ifru.ifru_mtu })
+    let ifreq = ioctl_ifreq(fd, iface, libc::SIOCGIFMTU as libc::Ioctl).ok()?;
+    // SAFETY: a successful SIOCGIFMTU initializes the MTU member of ifr_ifru.
+    Some(unsafe { ifreq.ifr_ifru.ifru_mtu })
 }
 
-fn flags(fd: RawFd, iface: &str) -> Option<i16> {
-    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFFLAGS as libc::Ioctl).ok()?;
-    Some(unsafe { ifr.ifr_ifru.ifru_flags })
+fn flags(iface: &str) -> Option<i16> {
+    interfaces_for(iface)
+        .ok()?
+        .first()
+        .map(|interface| interface.flags.bits() as i16)
 }
 
 fn hwaddr(fd: RawFd, iface: &str) -> Option<[u8; 6]> {
-    let ifr = ioctl_ifreq(fd, iface, libc::SIOCGIFHWADDR as libc::Ioctl).ok()?;
-    let sockaddr = unsafe { ifr.ifr_ifru.ifru_hwaddr };
-    let mut out = [0u8; 6];
-    for (dst, src) in out.iter_mut().zip(sockaddr.sa_data.iter()) {
-        *dst = *src as u8;
+    let ifreq = ioctl_ifreq(fd, iface, libc::SIOCGIFHWADDR as libc::Ioctl).ok()?;
+    // SAFETY: a successful SIOCGIFHWADDR initializes the hardware-address
+    // sockaddr member of ifr_ifru. Linux stores the address bytes in sa_data.
+    let sockaddr = unsafe { ifreq.ifr_ifru.ifru_hwaddr };
+    let mut address = [0; 6];
+    for (dst, src) in address.iter_mut().zip(sockaddr.sa_data) {
+        *dst = src as u8;
     }
-    Some(out)
+    Some(address)
 }
 
 fn network(addr: Ipv4Addr, mask: Ipv4Addr) -> Ipv4Addr {
     Ipv4Addr::from(u32::from(addr) & u32::from(mask))
+}
+
+fn ipv4_text(address: Option<Ipv4Addr>) -> String {
+    address.map_or_else(|| "NON-IP".to_owned(), |address| address.to_string())
+}
+
+fn network_text(address: Option<Ipv4Addr>, netmask: Option<Ipv4Addr>) -> String {
+    match (address, netmask) {
+        (Some(address), Some(netmask)) => network(address, netmask).to_string(),
+        _ => "NON-IP".to_owned(),
+    }
+}
+
+fn broadcast_text(address: Option<Ipv4Addr>, broadcast: Option<Ipv4Addr>) -> String {
+    if address.is_some() {
+        broadcast.unwrap_or(Ipv4Addr::UNSPECIFIED).to_string()
+    } else {
+        "NON-IP".to_owned()
+    }
+}
+
+fn config_text(
+    address: Option<Ipv4Addr>,
+    netmask: Option<Ipv4Addr>,
+    broadcast: Option<Ipv4Addr>,
+    mtu: i32,
+) -> String {
+    format!(
+        "{} {} {} {}",
+        ipv4_text(address),
+        ipv4_text(netmask),
+        broadcast_text(address, broadcast),
+        mtu
+    )
 }
 
 fn stats(iface: &str) -> Option<([u64; 8], [u64; 8])> {
@@ -187,14 +244,7 @@ fn stats(iface: &str) -> Option<([u64; 8], [u64; 8])> {
 }
 
 fn os_error_message(err: &io::Error) -> String {
-    if let Some(code) = err.raw_os_error() {
-        unsafe {
-            return CStr::from_ptr(libc::strerror(code))
-                .to_string_lossy()
-                .into_owned();
-        }
-    }
-    err.to_string()
+    plain_os_error(err)
 }
 
 fn print_flags(bits: i16) {
@@ -224,7 +274,7 @@ fn print_flags(bits: i16) {
 }
 
 fn run_command(fd: RawFd, opt: &str, iface: &str) {
-    let ex = exists(fd, iface);
+    let ex = exists(iface);
     match opt {
         "-e" => {
             std::process::exit(if ex { 0 } else { 1 });
@@ -233,33 +283,23 @@ fn run_command(fd: RawFd, opt: &str, iface: &str) {
             println!("{}", if ex { "yes" } else { "no" });
             return;
         }
-        _ if !ex && is_stats_or_rate(opt) => stack_smash_abort(),
+        _ if !ex && is_stats_or_rate(opt) => stats_not_found(iface),
         _ if !ex => iface_not_found(iface),
         _ => {}
     }
 
     match opt {
-        "-p" => match (addr(fd, iface), netmask(fd, iface), mtu(fd, iface)) {
-            (Some(a), Some(n), Some(m)) => println!(
-                "{} {} {} {}",
-                a,
-                n,
-                broadcast(fd, iface).unwrap_or(Ipv4Addr::UNSPECIFIED),
-                m
+        "-p" => match mtu(fd, iface) {
+            Some(mtu) => println!(
+                "{}",
+                config_text(addr(iface), netmask(iface), broadcast(fd, iface), mtu)
             ),
-            _ => println!("NON-IP"),
+            None => println!("NON-IP"),
         },
-        "-pa" => addr(fd, iface)
-            .map(|x| println!("{x}"))
-            .unwrap_or_else(|| fail()),
-        "-pn" => netmask(fd, iface)
-            .map(|x| println!("{x}"))
-            .unwrap_or_else(|| fail()),
-        "-pN" => match (addr(fd, iface), netmask(fd, iface)) {
-            (Some(a), Some(n)) => println!("{}", network(a, n)),
-            _ => fail(),
-        },
-        "-pb" => println!("{}", broadcast(fd, iface).unwrap_or(Ipv4Addr::UNSPECIFIED)),
+        "-pa" => println!("{}", ipv4_text(addr(iface))),
+        "-pn" => println!("{}", ipv4_text(netmask(iface))),
+        "-pN" => println!("{}", network_text(addr(iface), netmask(iface))),
+        "-pb" => println!("{}", broadcast_text(addr(iface), broadcast(fd, iface))),
         "-pm" => mtu(fd, iface)
             .map(|x| println!("{x}"))
             .unwrap_or_else(|| fail()),
@@ -274,7 +314,7 @@ fn run_command(fd: RawFd, opt: &str, iface: &str) {
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
             );
         }
-        "-pf" => flags(fd, iface).map(print_flags).unwrap_or_else(|| fail()),
+        "-pf" => flags(iface).map(print_flags).unwrap_or_else(|| fail()),
         "-si" => stats(iface)
             .map(|(rx, _)| {
                 println!(
@@ -372,11 +412,42 @@ fn main() {
         usage();
     }
 
-    let sock = Socket::new().unwrap_or_else(|err| {
+    let socket = IoctlSocket::new().unwrap_or_else(|err| {
         eprintln!("socket: {}", os_error_message(&err));
         std::process::exit(1);
     });
+
     for opt in opts {
-        run_command(sock.0, opt, iface);
+        run_command(socket.0.as_raw_fd(), opt, iface);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{broadcast_text, config_text, ipv4_text, network_text};
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn existing_non_ip_interface_values_are_rendered_as_non_ip() {
+        assert_eq!(ipv4_text(None), "NON-IP");
+        assert_eq!(network_text(None, None), "NON-IP");
+        assert_eq!(broadcast_text(None, None), "NON-IP");
+        assert_eq!(
+            config_text(None, None, None, 1400),
+            "NON-IP NON-IP NON-IP 1400"
+        );
+    }
+
+    #[test]
+    fn ipv4_values_and_missing_broadcast_are_rendered() {
+        let address = Some(Ipv4Addr::new(10, 23, 4, 5));
+        let netmask = Some(Ipv4Addr::new(255, 255, 255, 0));
+        assert_eq!(ipv4_text(address), "10.23.4.5");
+        assert_eq!(network_text(address, netmask), "10.23.4.0");
+        assert_eq!(broadcast_text(address, None), "0.0.0.0");
+        assert_eq!(
+            config_text(address, netmask, None, 1400),
+            "10.23.4.5 255.255.255.0 0.0.0.0 1400"
+        );
     }
 }

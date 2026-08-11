@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+use cjrh_moreutils_common::plain_os_error;
+use nix::sys::signal::{Signal, raise};
 use std::env;
-use std::ffi::CStr;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -113,15 +114,7 @@ fn print_os_error(prefix: &str, err: &io::Error) {
 }
 
 fn os_error_message(err: &io::Error) -> String {
-    if let Some(errno) = err.raw_os_error() {
-        unsafe {
-            let message = libc::strerror(errno);
-            if !message.is_null() {
-                return CStr::from_ptr(message).to_string_lossy().into_owned();
-            }
-        }
-    }
-    err.to_string()
+    plain_os_error(err)
 }
 
 fn exit_with_child_status(status: ExitStatus) -> ! {
@@ -136,9 +129,25 @@ fn exit_with_child_status(status: ExitStatus) -> ! {
 }
 
 fn terminate_by_signal(signal: i32) -> ! {
+    // SAFETY: `signal` is either SIGPIPE or a number from
+    // `ExitStatusExt::signal`, so the kernel has reported it as a valid signal.
+    // Restoring SIG_DFL is required before raising it: an ignored disposition
+    // may have been inherited across exec, but ifne must itself terminate with
+    // the same signal. This single-threaded binary changes the disposition only
+    // while exiting, and SIG_DFL is the libc-defined default-handler value.
     unsafe {
         libc::signal(signal, libc::SIG_DFL);
-        libc::raise(signal);
+    }
+    if let Ok(signal) = Signal::try_from(signal) {
+        let _ = raise(signal);
+    } else {
+        // SAFETY: nix deliberately does not represent realtime signals, but
+        // ExitStatusExt obtained this valid signal number from the kernel.
+        // libc::raise accepts that raw number; the default disposition above
+        // ensures it terminates rather than being ignored.
+        unsafe {
+            libc::raise(signal);
+        }
     }
     std::process::exit(128 + signal);
 }

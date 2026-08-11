@@ -58,13 +58,24 @@ fn base_command<S: AsRef<OsStr>>(program: S, cwd: &Path) -> Command {
 }
 
 #[cfg(unix)]
-fn set_child_umask(command: &mut Command, mask: libc::mode_t) {
-    unsafe {
-        command.pre_exec(move || {
-            libc::umask(mask);
-            Ok(())
-        });
-    }
+fn base_command_with_umask<S: AsRef<OsStr>>(program: S, cwd: &Path, mask: libc::mode_t) -> Command {
+    let mut command = Command::new("/bin/sh");
+    command
+        .arg0("sponge")
+        .process_group(0)
+        .arg("-c")
+        .arg("umask \"$1\"; shift; exec \"$@\"")
+        .arg("sponge-umask")
+        .arg(format!("{mask:03o}"))
+        .arg(program)
+        .current_dir(cwd)
+        .env_clear()
+        .env("PATH", "/bin:/usr/bin")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
 }
 
 fn finish_command(mut command: Command, stdin: &[u8]) -> RunOutput {
@@ -155,9 +166,8 @@ fn run_sponge_with_umask(
     cwd: &Path,
     mask: libc::mode_t,
 ) -> RunOutput {
-    let mut command = base_command(program, cwd);
+    let mut command = base_command_with_umask(program, cwd, mask);
     command.args(args);
-    set_child_umask(&mut command, mask);
     finish_command(command, stdin)
 }
 
@@ -610,7 +620,7 @@ fn error_paths_and_stdin_read_errors_match() {
     assert!(!ours_dir.join("out").exists());
 
     #[cfg(unix)]
-    if unsafe { libc::geteuid() } != 0 {
+    if !nix::unistd::geteuid().is_root() {
         let no_write_oracle = oracle_dir.join("no-write");
         let no_write_ours = ours_dir.join("no-write");
         fs::create_dir_all(&no_write_oracle).unwrap();
@@ -698,9 +708,11 @@ fn symlinks_special_files_and_fifos_match() {
 #[cfg(unix)]
 fn run_fifo_case(program: &str, cwd: &Path, input: &[u8]) -> (RunOutput, Vec<u8>) {
     let fifo = cwd.join("fifo");
-    let c_path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
-    let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
-    assert_eq!(rc, 0, "mkfifo {}", fifo.display());
+    nix::unistd::mkfifo(
+        &fifo,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .unwrap_or_else(|err| panic!("mkfifo {}: {err}", fifo.display()));
 
     let reader_path = fifo.clone();
     let reader = thread::spawn(move || {
