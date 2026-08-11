@@ -231,6 +231,39 @@ fn first_non_loopback_without_ipv4() -> Option<String> {
     })
 }
 
+#[cfg(target_os = "linux")]
+fn assert_namespace_scenario(name: &str, unshare_args: &[&str], script: &str, expected: &[u8]) {
+    if !Path::new("/bin/unshare").exists() && !Path::new("/usr/bin/unshare").exists() {
+        eprintln!("skipping {name}: unshare is unavailable");
+        return;
+    }
+
+    let mut command = base_command("unshare");
+    command
+        .env("OURS", OURS)
+        .args(unshare_args)
+        .args(["sh", "-c", script]);
+    let output = finish_command(command, b"");
+
+    if !output.stdout.starts_with(b"READY\n") {
+        eprintln!(
+            "skipping {name}: isolated network setup failed: status={:?}, stdout={}, stderr={}",
+            output.status,
+            render_bytes(&output.stdout),
+            render_bytes(&output.stderr)
+        );
+        return;
+    }
+
+    assert_eq!(output.status.code, Some(0), "{name}: status");
+    assert_eq!(output.stdout, expected, "{name}: stdout");
+    assert!(
+        output.stderr.is_empty(),
+        "{name}: stderr={}",
+        render_bytes(&output.stderr)
+    );
+}
+
 #[test]
 fn cli_parsing_and_usage_match() {
     let cases: &[(&str, &[&str])] = &[
@@ -365,6 +398,55 @@ fn flags_and_hardware_address_match() {
         );
         assert_compat("flags on ethernet-like interface", &["-pf", &iface]);
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn broadcastless_addresses_and_labeled_aliases_work() {
+    let script = r#"
+set -eu
+mount --make-rprivate / 2>/dev/null || true
+mount -t sysfs sysfs /sys
+ip link add ifdata0 type veth peer name ifdata1
+ip link set ifdata0 address 02:00:00:00:00:01 mtu 1400 up
+ip link set ifdata1 up
+ip addr add 192.0.2.1/24 dev ifdata0
+printf 'READY\n'
+"$OURS" -pb ifdata0
+ip addr add 192.0.2.2/24 dev ifdata0 label ifdata0:alias
+"$OURS" -pb ifdata0:alias
+"$OURS" -pm ifdata0:alias
+"$OURS" -ph ifdata0:alias
+"$OURS" -p ifdata0:alias
+"#;
+    assert_namespace_scenario(
+        "broadcastless addresses and labeled aliases",
+        &["--user", "--map-root-user", "--net", "--mount"],
+        script,
+        b"READY\n0.0.0.0\n0.0.0.0\n1400\n02:00:00:00:00:01\n192.0.2.2 255.255.255.0 0.0.0.0 1400\n",
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn interface_queries_use_the_current_network_namespace() {
+    let script = r#"
+set -eu
+ip link add ifdatans0 type veth peer name ifdatans1
+ip link set ifdatans0 address 02:00:00:00:00:02 mtu 1401 up
+ip link set ifdatans1 up
+ip addr add 192.0.2.10/24 dev ifdatans0
+printf 'READY\n'
+"$OURS" -pm ifdatans0
+"$OURS" -ph ifdatans0
+"$OURS" -p ifdatans0
+"#;
+    assert_namespace_scenario(
+        "current network namespace",
+        &["--user", "--map-root-user", "--net"],
+        script,
+        b"READY\n1401\n02:00:00:00:00:02\n192.0.2.10 255.255.255.0 0.0.0.0 1401\n",
+    );
 }
 
 #[test]

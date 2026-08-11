@@ -2,12 +2,13 @@
 
 use cjrh_moreutils_common::plain_os_error;
 use nix::ifaddrs::{InterfaceAddress, getifaddrs};
-use nix::sys::socket::SockaddrStorage;
+use nix::sys::socket::{AddressFamily, SockFlag, SockType, SockaddrStorage, socket};
 use std::env;
 use std::fs;
 use std::io;
+use std::mem;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::path::{Component, Path};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
 const COMMANDS: &[(&str, &str)] = &[
     ("-e", "Reports interface existence via return code"),
@@ -67,6 +68,21 @@ fn is_stats_or_rate(opt: &str) -> bool {
     opt.starts_with("-si") || opt.starts_with("-so") || opt == "-bips" || opt == "-bops"
 }
 
+struct IoctlSocket(OwnedFd);
+
+impl IoctlSocket {
+    fn new() -> io::Result<Self> {
+        socket(
+            AddressFamily::Inet,
+            SockType::Datagram,
+            SockFlag::empty(),
+            None,
+        )
+        .map(Self)
+        .map_err(io::Error::from)
+    }
+}
+
 fn interfaces_for(iface: &str) -> io::Result<Vec<InterfaceAddress>> {
     getifaddrs().map_err(io::Error::from).map(|interfaces| {
         interfaces
@@ -75,12 +91,35 @@ fn interfaces_for(iface: &str) -> io::Result<Vec<InterfaceAddress>> {
     })
 }
 
+fn ifreq_for(iface: &str) -> libc::ifreq {
+    // SAFETY: an all-zero ifreq is a valid starting value for these getter
+    // ioctls. The interface name is copied into its fixed-size buffer below.
+    let mut ifreq: libc::ifreq = unsafe { mem::zeroed() };
+    for (dst, src) in ifreq.ifr_name.iter_mut().zip(iface.bytes()) {
+        *dst = src as libc::c_char;
+    }
+    ifreq
+}
+
+fn ioctl_ifreq(fd: RawFd, iface: &str, request: libc::Ioctl) -> io::Result<libc::ifreq> {
+    let mut ifreq = ifreq_for(iface);
+    // SAFETY: fd is a live AF_INET datagram socket; request is one of the
+    // SIOCGIF* getter requests used below; and ifreq points to writable storage
+    // initialized with a bounded interface name.
+    let result = unsafe { libc::ioctl(fd, request, &mut ifreq) };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(ifreq)
+    }
+}
+
 fn exists(iface: &str) -> bool {
     interfaces_for(iface).is_ok_and(|interfaces| !interfaces.is_empty())
 }
 
 fn ipv4(address: &SockaddrStorage) -> Option<Ipv4Addr> {
-    let address: SocketAddrV4 = address.as_sockaddr_in()?.clone().into();
+    let address: SocketAddrV4 = (*address.as_sockaddr_in()?).into();
     Some(*address.ip())
 }
 
@@ -98,26 +137,29 @@ fn netmask(iface: &str) -> Option<Ipv4Addr> {
         .find_map(|interface| interface.netmask.as_ref().and_then(ipv4))
 }
 
-fn broadcast(iface: &str) -> Option<Ipv4Addr> {
-    interfaces_for(iface)
-        .ok()?
-        .iter()
-        .find_map(|interface| interface.broadcast.as_ref().and_then(ipv4))
-}
-
-fn sysfs_value(iface: &str, name: &str) -> Option<String> {
-    let mut components = Path::new(iface).components();
-    let Component::Normal(iface) = components.next()? else {
-        return None;
-    };
-    if components.next().is_some() {
+fn sockaddr_to_v4(sockaddr: libc::sockaddr) -> Option<Ipv4Addr> {
+    if i32::from(sockaddr.sa_family) != libc::AF_INET {
         return None;
     }
-    fs::read_to_string(Path::new("/sys/class/net").join(iface).join(name)).ok()
+    // SAFETY: SIOCGIF*ADDR populated this sockaddr with an AF_INET
+    // sockaddr_in. Both structures have the platform ABI layout expected by
+    // the ioctl, and the family check above verifies the active representation.
+    let address: libc::sockaddr_in = unsafe { mem::transmute(sockaddr) };
+    Some(Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)))
 }
 
-fn mtu(iface: &str) -> Option<i32> {
-    sysfs_value(iface, "mtu")?.trim().parse().ok()
+fn broadcast(fd: RawFd, iface: &str) -> Option<Ipv4Addr> {
+    let ifreq = ioctl_ifreq(fd, iface, libc::SIOCGIFBRDADDR as libc::Ioctl).ok()?;
+    // SAFETY: a successful SIOCGIFBRDADDR initializes the address member of
+    // ifr_ifru, which is copied immediately and interpreted above.
+    let sockaddr = unsafe { ifreq.ifr_ifru.ifru_addr };
+    sockaddr_to_v4(sockaddr)
+}
+
+fn mtu(fd: RawFd, iface: &str) -> Option<i32> {
+    let ifreq = ioctl_ifreq(fd, iface, libc::SIOCGIFMTU as libc::Ioctl).ok()?;
+    // SAFETY: a successful SIOCGIFMTU initializes the MTU member of ifr_ifru.
+    Some(unsafe { ifreq.ifr_ifru.ifru_mtu })
 }
 
 fn flags(iface: &str) -> Option<i16> {
@@ -127,14 +169,16 @@ fn flags(iface: &str) -> Option<i16> {
         .map(|interface| interface.flags.bits() as i16)
 }
 
-fn hwaddr(iface: &str) -> Option<[u8; 6]> {
-    let octets: Vec<u8> = sysfs_value(iface, "address")?
-        .trim()
-        .split(':')
-        .map(|octet| u8::from_str_radix(octet, 16))
-        .collect::<Result<_, _>>()
-        .ok()?;
-    octets.get(..6)?.try_into().ok()
+fn hwaddr(fd: RawFd, iface: &str) -> Option<[u8; 6]> {
+    let ifreq = ioctl_ifreq(fd, iface, libc::SIOCGIFHWADDR as libc::Ioctl).ok()?;
+    // SAFETY: a successful SIOCGIFHWADDR initializes the hardware-address
+    // sockaddr member of ifr_ifru. Linux stores the address bytes in sa_data.
+    let sockaddr = unsafe { ifreq.ifr_ifru.ifru_hwaddr };
+    let mut address = [0; 6];
+    for (dst, src) in address.iter_mut().zip(sockaddr.sa_data) {
+        *dst = src as u8;
+    }
+    Some(address)
 }
 
 fn network(addr: Ipv4Addr, mask: Ipv4Addr) -> Ipv4Addr {
@@ -229,7 +273,7 @@ fn print_flags(bits: i16) {
     }
 }
 
-fn run_command(opt: &str, iface: &str) {
+fn run_command(fd: RawFd, opt: &str, iface: &str) {
     let ex = exists(iface);
     match opt {
         "-e" => {
@@ -245,22 +289,22 @@ fn run_command(opt: &str, iface: &str) {
     }
 
     match opt {
-        "-p" => match mtu(iface) {
+        "-p" => match mtu(fd, iface) {
             Some(mtu) => println!(
                 "{}",
-                config_text(addr(iface), netmask(iface), broadcast(iface), mtu)
+                config_text(addr(iface), netmask(iface), broadcast(fd, iface), mtu)
             ),
             None => println!("NON-IP"),
         },
         "-pa" => println!("{}", ipv4_text(addr(iface))),
         "-pn" => println!("{}", ipv4_text(netmask(iface))),
         "-pN" => println!("{}", network_text(addr(iface), netmask(iface))),
-        "-pb" => println!("{}", broadcast_text(addr(iface), broadcast(iface))),
-        "-pm" => mtu(iface)
+        "-pb" => println!("{}", broadcast_text(addr(iface), broadcast(fd, iface))),
+        "-pm" => mtu(fd, iface)
             .map(|x| println!("{x}"))
             .unwrap_or_else(|| fail()),
         "-ph" => {
-            let mac = hwaddr(iface).unwrap_or([0; 6]);
+            let mac = hwaddr(fd, iface).unwrap_or([0; 6]);
             if mac == [0; 6] {
                 eprintln!("Error: {iface}: no hardware address");
                 fail();
@@ -368,8 +412,13 @@ fn main() {
         usage();
     }
 
+    let socket = IoctlSocket::new().unwrap_or_else(|err| {
+        eprintln!("socket: {}", os_error_message(&err));
+        std::process::exit(1);
+    });
+
     for opt in opts {
-        run_command(opt, iface);
+        run_command(socket.0.as_raw_fd(), opt, iface);
     }
 }
 
