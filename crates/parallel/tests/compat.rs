@@ -425,19 +425,22 @@ fn replacement_mode_matches() {
 fn independent_shell_commands_match_sequentially() {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path();
+    // Upstream parallel forwards output through helper processes and terminates
+    // them immediately after the final job exits. Keep output-producing jobs
+    // alive briefly so their bytes are drained before that cleanup race.
     let cases: &[(&str, &[&str])] = &[
         (
             "simple independent shell commands",
-            &["-j1", "--", "printf A", "printf B"],
+            &["-j1", "--", "printf A; sleep 0.2", "printf B; sleep 0.2"],
         ),
         (
             "variables pipelines redirections and empty command",
             &[
                 "-j1",
                 "--",
-                "X=ok; printf \"$X\\n\"",
-                "printf 'b\\na\\n' | sort",
-                "printf side > file; cat file",
+                "X=ok; printf \"$X\\n\"; sleep 0.2",
+                "printf 'b\\na\\n' | sort; sleep 0.2",
+                "printf side > file; cat file; sleep 0.2",
                 "",
             ],
         ),
