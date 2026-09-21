@@ -285,6 +285,11 @@ fn read_counts(path: &Path) -> Vec<usize> {
 fn cli_parsing_and_option_diagnostics_match() {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path();
+    // Upstream parallel forwards output through helper processes and terminates
+    // them immediately after the final job exits. With more than one worker the
+    // helper can be killed before it drains the child's bytes, so keep
+    // output-producing jobs alive briefly to avoid that cleanup race.
+    const KEEP_ALIVE_ECHO: &str = "echo \"$1\"; sleep 0.2";
     let cases: &[(&str, &[&str])] = &[
         ("no args", &[]),
         ("missing separator silently runs no jobs", &["echo", "a"]),
@@ -295,15 +300,24 @@ fn cli_parsing_and_option_diagnostics_match() {
         ("dashdash-looking bad option", &["--bad"]),
         ("j missing", &["-j"]),
         ("j non-numeric", &["-j", "x", "echo", "--", "a"]),
-        ("j attached", &["-j2", "echo", "--", "a"]),
-        ("j zero sequential", &["-j", "0", "echo", "--", "a"]),
+        (
+            "j attached",
+            &["-j2", "sh", "-c", KEEP_ALIVE_ECHO, "job", "--", "a"],
+        ),
+        (
+            "j zero sequential",
+            &["-j", "0", "sh", "-c", KEEP_ALIVE_ECHO, "job", "--", "a"],
+        ),
         (
             "j negative attached unlimited",
-            &["-j-1", "echo", "--", "a"],
+            &["-j-1", "sh", "-c", KEEP_ALIVE_ECHO, "job", "--", "a"],
         ),
         ("l missing", &["-l"]),
         ("l non-numeric", &["-l", "x", "echo", "--", "a"]),
-        ("l attached high load", &["-l999", "echo", "--", "a"]),
+        (
+            "l attached high load",
+            &["-l999", "sh", "-c", KEEP_ALIVE_ECHO, "job", "--", "a"],
+        ),
         ("n missing", &["-n"]),
         ("n non-numeric", &["-n", "x", "echo", "--", "a"]),
         ("n zero", &["-n", "0", "echo", "--", "a"]),
@@ -312,7 +326,10 @@ fn cli_parsing_and_option_diagnostics_match() {
             "i and n incompatible",
             &["-i", "-n", "2", "echo", "{}", "--", "a"],
         ),
-        ("clustered i j", &["-ij2", "echo", "{}", "--", "a"]),
+        (
+            "clustered i j",
+            &["-ij2", "sh", "-c", KEEP_ALIVE_ECHO, "job", "{}", "--", "a"],
+        ),
         ("n without command", &["-n", "2", "--", "echo a"]),
     ];
 
