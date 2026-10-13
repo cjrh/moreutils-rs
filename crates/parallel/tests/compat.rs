@@ -12,6 +12,11 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 const OURS: &str = env!("CARGO_BIN_EXE_parallel");
 const RUN_TIMEOUT: Duration = Duration::from_secs(8);
+// Upstream parallel forwards job output through helper processes and kills
+// them as soon as the final job exits, even with -j1. Bytes the helpers have
+// not drained by then are lost, so keep output-producing jobs alive briefly
+// to avoid that cleanup race.
+const KEEP_ALIVE_ECHO: &str = "echo \"$1\"; sleep 0.2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StatusRepr {
@@ -285,11 +290,6 @@ fn read_counts(path: &Path) -> Vec<usize> {
 fn cli_parsing_and_option_diagnostics_match() {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path();
-    // Upstream parallel forwards output through helper processes and terminates
-    // them immediately after the final job exits. With more than one worker the
-    // helper can be killed before it drains the child's bytes, so keep
-    // output-producing jobs alive briefly to avoid that cleanup race.
-    const KEEP_ALIVE_ECHO: &str = "echo \"$1\"; sleep 0.2";
     let cases: &[(&str, &[&str])] = &[
         ("no args", &[]),
         ("missing separator silently runs no jobs", &["echo", "a"]),
@@ -321,7 +321,21 @@ fn cli_parsing_and_option_diagnostics_match() {
         ("n missing", &["-n"]),
         ("n non-numeric", &["-n", "x", "echo", "--", "a"]),
         ("n zero", &["-n", "0", "echo", "--", "a"]),
-        ("n attached", &["-j1", "-n2", "echo", "--", "a", "b", "c"]),
+        (
+            "n attached",
+            &[
+                "-j1",
+                "-n2",
+                "sh",
+                "-c",
+                "echo \"$@\"; sleep 0.2",
+                "job",
+                "--",
+                "a",
+                "b",
+                "c",
+            ],
+        ),
         (
             "i and n incompatible",
             &["-i", "-n", "2", "echo", "{}", "--", "a"],
@@ -345,12 +359,32 @@ fn command_plus_arguments_mode_matches_sequentially() {
     let cases: &[(&str, &[&str])] = &[
         (
             "echo appends one arg",
-            &["-j1", "echo", "--", "a", "b", "c"],
+            &[
+                "-j1",
+                "sh",
+                "-c",
+                KEEP_ALIVE_ECHO,
+                "job",
+                "--",
+                "a",
+                "b",
+                "c",
+            ],
         ),
         (
             "arguments are literal bytes not shell syntax",
             &[
-                "-j1", "printf", "<%s>\\n", "--", "a b", "*", "\"q\"", "x\ty", "",
+                "-j1",
+                "sh",
+                "-c",
+                "printf '<%s>\\n' \"$1\"; sleep 0.2",
+                "job",
+                "--",
+                "a b",
+                "*",
+                "\"q\"",
+                "x\ty",
+                "",
             ],
         ),
         (
@@ -359,7 +393,7 @@ fn command_plus_arguments_mode_matches_sequentially() {
                 "-j1",
                 "sh",
                 "-c",
-                "printf '%s:%s\\n' \"$0\" \"$1\"",
+                "printf '%s:%s\\n' \"$0\" \"$1\"; sleep 0.2",
                 "fixed",
                 "--",
                 "a",
@@ -372,8 +406,10 @@ fn command_plus_arguments_mode_matches_sequentially() {
                 "-j1",
                 "-n",
                 "2",
-                "printf",
-                "<%s><%s>\\n",
+                "sh",
+                "-c",
+                "printf '<%s><%s>\\n' \"$@\"; sleep 0.2",
+                "job",
                 "--",
                 "a",
                 "b",
@@ -385,8 +421,10 @@ fn command_plus_arguments_mode_matches_sequentially() {
             &[
                 "-j1",
                 "-n3",
-                "printf",
-                "%s,%s,%s\\n",
+                "sh",
+                "-c",
+                "printf '%s,%s,%s\\n' \"$@\"; sleep 0.2",
+                "job",
                 "--",
                 "a",
                 "b",
@@ -409,15 +447,28 @@ fn replacement_mode_matches() {
     let cases: &[(&str, &[&str])] = &[
         (
             "replace token in one command word",
-            &["-j1", "-i", "echo", "pre{}post", "--", "a", "b"],
+            &[
+                "-j1",
+                "-i",
+                "sh",
+                "-c",
+                KEEP_ALIVE_ECHO,
+                "job",
+                "pre{}post",
+                "--",
+                "a",
+                "b",
+            ],
         ),
         (
             "replace multiple words and occurrences",
             &[
                 "-j1",
                 "-i",
-                "printf",
-                "<%s>:%s\\n",
+                "sh",
+                "-c",
+                "printf '<%s>:%s\\n' \"$@\"; sleep 0.2",
+                "job",
                 "{}{}",
                 "X{}Y",
                 "--",
@@ -429,7 +480,18 @@ fn replacement_mode_matches() {
         ),
         (
             "no replacement token still runs once per argument",
-            &["-j1", "-i", "echo", "fixed", "--", "a", "b"],
+            &[
+                "-j1",
+                "-i",
+                "sh",
+                "-c",
+                KEEP_ALIVE_ECHO,
+                "job",
+                "fixed",
+                "--",
+                "a",
+                "b",
+            ],
         ),
     ];
 
@@ -493,7 +555,10 @@ fn exit_status_aggregation_matches() {
         ),
         (
             "command not found in shell command mode",
-            &["--", "notfound-parallel-compat"],
+            &[
+                "--",
+                "notfound-parallel-compat; status=$?; sleep 0.2; exit $status",
+            ],
         ),
     ];
 
@@ -513,7 +578,7 @@ fn concurrent_command_output_matches_as_unordered_lines() {
         "-j0",
         "sh",
         "-c",
-        "printf 'out:%s\\n' \"$1\"; printf 'err:%s\\n' \"$1\" >&2",
+        "printf 'out:%s\\n' \"$1\"; printf 'err:%s\\n' \"$1\" >&2; sleep 0.2",
         "job",
         "--",
         "a",
@@ -632,7 +697,7 @@ fn child_stdin_is_inherited_by_command_jobs() {
             "-j1",
             "sh",
             "-c",
-            "read x || x=EOF; printf '%s:%s\\n' \"$1\" \"$x\"",
+            "read x || x=EOF; printf '%s:%s\\n' \"$1\" \"$x\"; sleep 0.2",
             "job",
             "--",
             "a",
@@ -649,7 +714,7 @@ fn high_load_limit_starts_jobs_normally() {
     let temp = tempfile::tempdir().unwrap();
     assert_compat(
         "high maxload runs immediately",
-        &["-l999", "echo", "--", "a"],
+        &["-l999", "sh", "-c", KEEP_ALIVE_ECHO, "job", "--", "a"],
         b"",
         temp.path(),
         &[],
